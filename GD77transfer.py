@@ -1,9 +1,9 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Copyright (C) 2020  OH1FSS juhani.jaakola@iki.fi
                     F1RMB, Daniel Caujolle-Bert <f1rmb.daniel@gmail.com>
-                    VK3KYY / G4KYF, Roger Clark. 
+                    VK3KYY / G4KYF, Roger Clark.
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -21,23 +21,45 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 
 
-You need to install future if you're running python2: 
+You need to install future if you're running python2:
     debian like: sudo apt-get install python-future
     or: pip install future
-   
+
 You also need python-serial or python3-serial
 
 On windows install pyserial, pillow and cimage (using pip install ...)
 
-""" 	
-from __future__ import print_function
-from datetime import datetime
+"""
+import sys
+import os
 import time
-import os.path
 import ntpath
-import getopt, sys
+import getopt
 import serial
 import platform
+import argparse
+from datetime import datetime
+
+def get_parser():
+    p = argparse.ArgumentParser()
+    p.add_argument('--port', '-p', help="Serial port of radio",
+                   default=('COM13'
+                        if platform.system() == 'Windows'
+                        else '/dev/ttyACM0'))
+
+    sp = p.add_subparsers(dest='cmd')
+    p_read_codeplug = sp.add_parser('read')
+    p_read_codeplug.add_argument(
+        'file', help="File to write codeplug from radio",
+        default="codeplug.g77")
+
+    p_write_codeplug = sp.add_parser('write')
+    p_write_codeplug.add_argument(
+        'file', help="File to read codeplug and store in radio",
+        default="codeplug.g77")
+
+    return p
+
 #from PIL import Image
 #from PIL import ImageDraw, ImageColor
 
@@ -59,8 +81,6 @@ class DummySerial:
     def close(self):
         pass
 
-SERIAL_WAIT_SLEEP = 0.0
-
 def serialInit(serialDev):
     ser = serial.Serial()
     ser.port = serialDev
@@ -68,10 +88,10 @@ def serialInit(serialDev):
     ser.bytesize = serial.EIGHTBITS
     ser.parity = serial.PARITY_NONE
     ser.stopbits = serial.STOPBITS_ONE
-    ser.timeout = 1000.0
+    ser.timeout = 2.0
     #ser.xonxoff = 0
     #ser.rtscts = 0
-    ser.write_timeout = 1000.0
+    ser.write_timeout = 2.0
     try:
         ser.open()
     except serial.SerialException as err:
@@ -121,13 +141,11 @@ def getMemoryArea(ser,buf,mode,bufStart,radioStart,length):
         if (ret != R_SIZE):
             print("ERROR: write() wrote " + str(ret) + " bytes")
             return False
-        while (ser.in_waiting == 0):
-            time.sleep(SERIAL_WAIT_SLEEP)
-        rcv = ser.read(ser.in_waiting)
+        rcv = ser.read(3)
         if (rcv[0] == ord('R')):
             gotBytes = (rcv[1] << 8) + rcv[2]
-            for i in range(0,gotBytes):
-                buf[bufPos] = rcv[i+3]
+            for i in range(0, gotBytes):
+                buf[bufPos] = ser.read(1)[0]
                 bufPos += 1
             radioPos += gotBytes
             remaining -= gotBytes
@@ -153,9 +171,7 @@ def flashPrepareSector(ser,address):
     if (ret != PREP_SIZE):
         print("ERROR: write() wrote " + str(ret) + " bytes")
         return False # ???
-    while (ser.in_waiting == 0):
-        time.sleep(SERIAL_WAIT_SLEEP)
-    rcv = ser.read(ser.in_waiting)
+    rcv = ser.read(2)
     return rcv[0] == snd[0] and rcv[1] == snd[1]
 
 FLASH_SEND_SIZE = 8
@@ -180,9 +196,7 @@ def flashSendData(ser,buf,radioStart,length):
         if (ret != FLASH_SEND_SIZE+batch):
             print("ERROR: write() wrote " + str(ret) + " bytes")
             return False
-        while (ser.in_waiting == 0):
-            time.sleep(SERIAL_WAIT_SLEEP)
-        rcv = ser.read(ser.in_waiting)
+        rcv = ser.read(2)
         if not (rcv[0] == snd[0] and rcv[1] == snd[1]):
             print("ERROR: at "+str(radioPos))
         bufPos += batch
@@ -200,9 +214,7 @@ def flashWriteSector(ser):
     if (ret != FLASH_WRITE_SIZE):
         print("ERROR: write() wrote " + str(ret) + " bytes")
         return False # ???
-    while (ser.in_waiting == 0):
-        time.sleep(SERIAL_WAIT_SLEEP)
-    rcv = ser.read(ser.in_waiting)
+    rcv = ser.read(2)
     return rcv[0] == snd[0] and rcv[1] == snd[1]
 
 FLASH_BLOCK_SIZE = 4096
@@ -250,9 +262,7 @@ def eepromSendData(ser,buf,bufStart,radioStart,length):
         if (ret != EEPROM_SEND_SIZE+batch):
             print("ERROR: write() wrote " + str(ret) + " bytes")
             return False
-        while (ser.in_waiting == 0):
-            time.sleep(SERIAL_WAIT_SLEEP)
-        rcv = ser.read(ser.in_waiting)
+        rcv = ser.read(2)
         if not (rcv[0] == snd[0] and rcv[1] == snd[1]):
             print("ERROR: at "+str(radioPos))
         bufPos += batch
@@ -284,9 +294,7 @@ def sendCommand(ser,commandNumber, x_or_command_option_number, y, iSize, alignme
     if (ret != 7+16): # length?
         print("ERROR: write() wrote " + str(ret) + " bytes")
         return False
-    while (ser.in_waiting == 0):
-        time.sleep(SERIAL_WAIT_SLEEP)
-    rcv = ser.read(ser.in_waiting)
+    rcv = ser.read(3)
     return len(rcv) > 2 and rcv[1] == snd[1]
 
 
@@ -363,57 +371,27 @@ def setConfig(ser,filename):
     # cmdCloseCPSScreen(ser)
     cmdCommand(ser,OPT_SAVE_SETTINGS_NOT_VFOS)
 
-OP_USAGE = 0
-OP_READ = 1
-OP_WRITE = 2
-
 def main():
     # Default tty
-    if (platform.system() == 'Windows'):
-        serialDev = "COM13"
-    else:
-        serialDev = "/dev/ttyACM0"
+    parser = get_parser()
+    args = parser.parse_args()
 
-    filename = "turha.g77"
-    operation = OP_USAGE
-    # Command line argument parsing
-    try:                                
-        opts, args = getopt.getopt(sys.argv[1:], "hrwd:f:", ["help", "read", "write", "device=", "filename="])
-    except getopt.GetoptError as err:
-        print(str(err))
-        usage()
-        sys.exit(2)
-    
-    for opt, arg in opts:
-        if opt in ("-h", "--help"):
-            usage()
-            sys.exit(2)
-        elif opt in ("-r", "--read"):
-            operation = OP_READ
-        elif opt in ("-w", "--write"):
-            operation = OP_WRITE
-        elif opt in ("-d", "--device"):
-            serialDev = arg
-        elif opt in ("-f", "--filename"):
-            filename = arg
-        else:
-            assert False, "Unhandled option"
+    ser = serialInit(args.port)
+    if args.cmd == 'read':
+        if not args.file.endswith('.g77'):
+            args.file = f"{args.file}.g77"
+        print(f"Reading codeplug from {args.port} into {args.file}")
+        getConfig(ser, args.file)
 
-    if operation == OP_READ:
-#        ser = DummySerial()
-        ser = serialInit(serialDev)
-        getConfig(ser,filename)
-        if (ser.is_open):
-            ser.close()
-    elif operation == OP_WRITE:
-#        ser = DummySerial()
-        ser = serialInit(serialDev)
-        setConfig(ser,filename)
-        if (ser.is_open):
-            ser.close()
-    else:
-        usage()
-        sys.exit(2)
+    if args.cmd == 'write':
+        if not args.file.endswith('.g77'):
+            args.file = f"{args.file}.g77"
+        print(f"Writing codeplug from {args.file} into {args.port}")
+        setConfig(ser, args.file)
 
-main()
-sys.exit(0)
+    if (ser.is_open):
+        ser.close()
+
+
+if __name__ == '__main__':
+    main()
