@@ -99,9 +99,14 @@ def get_parsers():
 @dataclass(frozen=True)
 class ChunkedBlock:
 
-    offset: int
+    raw_offset: int
+    preamble: int
     item_size: int
     item_count: int
+
+    @property
+    def offset(self):
+        return self.raw_offset + self.preamble
 
     def walk(self, buf):
         for i in range(self.item_count):
@@ -111,30 +116,6 @@ class ChunkedBlock:
             yield data
 
 
-# NEEDED
-#   Contacts / DTMF contacts
-#   RX Groups
-#   Zones
-#   Channels
-#   aux:
-#       radio name get/set
-#       dmrid get/set
-#       boot screen data
-#       vfo ch get/set
-#       opengd77 custom data (boot image)
-#
-
-# address       fn                   item size  number of items
-#|------------|---------------------------|---|-----------------
-# 0x17620       Contacts                    24  1024
-# 0x1D620       Rx Groups                   48  128
-# 0x8010        Zones                       48  250
-# 01790         Scan Lists                  88  64
-# 03780         Channels (first 128)        56  128
-# B1B0          Channels (remainder)        56  896
-# 01588         Emergency Systems           16  32
-
-
 @dataclass
 class Contact:
     name: str
@@ -142,12 +123,12 @@ class Contact:
     ctype: int
     rx_tone: bool
     ring_style: int
-    used: bool
+    used: int
 
     @classmethod
     def from_buffer(cls, buf):
         name_end = min(buf.index(0xff), 15)
-        name = buf[0:name_end]
+        name = bytes(buf[0:name_end])
         id = (bcd2int(buf[16]) * 1000000 +
               bcd2int(buf[17]) * 10000 +
               bcd2int(buf[18]) * 100 +
@@ -155,7 +136,8 @@ class Contact:
         ctype = buf[20]
         rx_tone = buf[21]
         ring_style = buf[22]
-        used = True if buf[23] == 0xff else False
+        # used = True if buf[23] == 0xff else False
+        used = buf[23]
         return cls(name, id, ctype, rx_tone, ring_style, used)
 
 
@@ -164,14 +146,42 @@ class TGList:
     name: str
     contacts: List[int]
 
+    @classmethod
+    def from_buffer(cls, buf):
+        name = bytes(buf[:16])
+        name = name.strip(b'\0')
+        name = name.strip(b'\xff')
+        contacts = []
+        for ci in range(16):
+            start = 16 + ci*2
+            end = start + 2
+            cn = struct.unpack("<H", buf[start:end])[0]
+            if cn:
+                contacts.append(cn)
+
+        return cls(name, contacts)
+
+
 @dataclass
 class Zone:
     name: str
 
 
-class OpenGD77Codeplug:
+@dataclass
+class Channel:
+    name: str
 
-    # mode, file_offset, radio_addr, len
+class OpenGD77Codeplug:
+    """Also
+       * radio name get/set
+       * dmrid get/set
+       * boot screen data
+       * vfo ch get/set
+       * opengd77 custom data (boot image)
+
+    """
+
+    # mode, file_offset, radio_addr, length
     parts = (
         (MODE_READ_EEPROM, 0x00E0, 0x00E0, 0x5f20),
         (MODE_READ_EEPROM, 0x7500, 0x7500, 0x3B00),
@@ -179,12 +189,21 @@ class OpenGD77Codeplug:
         (MODE_READ_FLASH, 0x1EE60, 0x00000, 0x11A0),
     )
 
-    contacts_block = ChunkedBlock(0x17620 + 0, 24, 1024)
-    rx_groups_block = ChunkedBlock(0x17620 + 128, 24, 128)
-    zones_block = ChunkedBlock(0x17620 + 32, 24, 250)
-    scan_lists_block = ChunkedBlock(0x17620 + 64, 24, 64)
-    channels1_block = ChunkedBlock(0x17620 + 16, 24, 128)
-    channels2_block = ChunkedBlock(0x17620 + 16, 24, 896)
+    contacts_block =    ChunkedBlock(0x17620, 0, 24, 1024)
+    tglist_block =      ChunkedBlock(0x1d620, 128, 80, 76)
+    zones_block =       ChunkedBlock(0x08010, 32, 48, 250)
+    scan_lists_block =  ChunkedBlock(0x01790, 64, 88, 64)
+    channels1_block =   ChunkedBlock(0x03780, 16, 56, 128)
+    channels2_block =   ChunkedBlock(0xb1b0, 16, 56, 896)
+
+    @staticmethod
+    def radio2file(address):
+        for mode, file_offset, radio_addr, length in self.parts:
+            if address >= radio_addr and address < radio_addr + length:
+                offset = radio_addr - file_offset
+                return address - offset
+        else:
+            return address
 
     def __init__(self):
         self.data = bytearray(repeat(0xff, CODEPLUG_SIZE))
@@ -198,7 +217,18 @@ class OpenGD77Codeplug:
             if chunk[0] == 0xff:
                 continue
             c = Contact.from_buffer(chunk)
+            # if c.used:
             yield c
+
+    def talk_groups(self):
+        tgb = self.tglist_block
+        table = self.data[tgb.raw_offset : tgb.offset]
+        print(table)
+        for chunk in tgb.walk(self.data):
+            tg = TGList.from_buffer(chunk)
+            if not len(tg.name):
+                continue
+            yield tg
 
     def __bytes__(self):
         return bytes(self.data)
@@ -545,6 +575,9 @@ def main():
 
         for c in cp.contacts():
             log.info(f"Contact {c}")
+
+        for tg in cp.talk_groups():
+            log.info(f"TG {tg}")
 
     else:
         log.warning(f"not implemented: {args.cmd}")
