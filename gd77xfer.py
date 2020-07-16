@@ -67,6 +67,7 @@ log = logging.getLogger()
 def bcd2int(b):
     return ((b>>4) & 0x0f) * 10 + (b & 0x0f)
 
+
 def get_parsers():
     p = argparse.ArgumentParser()
 
@@ -96,29 +97,9 @@ def get_parsers():
     return p, sp
 
 
-@dataclass(frozen=True)
-class ChunkedBlock:
-
-    raw_offset: int
-    preamble: int
-    item_size: int
-    item_count: int
-
-    @property
-    def offset(self):
-        return self.raw_offset + self.preamble
-
-    def walk(self, buf):
-        for i in range(self.item_count):
-            addr = self.offset + i * self.item_size
-            data = buf[addr : addr+self.item_size]
-            # log.debug(f"walk {i} 0x{addr:08x}-0x{addr+self.item_size:08x} {len(data)}")
-            yield data
-
-
 @dataclass
 class Contact:
-    name: str
+    name: bytes
     id: int
     ctype: int
     rx_tone: bool
@@ -143,14 +124,12 @@ class Contact:
 
 @dataclass
 class TGList:
-    name: str
+    name: bytes
     contacts: List[int]
 
     @classmethod
     def from_buffer(cls, buf):
-        name = bytes(buf[:16])
-        name = name.strip(b'\0')
-        name = name.strip(b'\xff')
+        name = bytes(buf[:16]).strip(b'\0').strip(b'\xff')
         contacts = []
         for ci in range(16):
             start = 16 + ci*2
@@ -163,44 +142,118 @@ class TGList:
 
 
 @dataclass
-class Zone:
-    name: str
+class Channel:
+    name: bytes
+    rx_freq: int # Hz
+    tx_freq: int # Hz
+    chtype: int
+    # TOT: int # 15s increments?
+    # TOT_rekey: int # s
+    # admit: int
+
+    used: bool = False
+
+    @classmethod
+    def from_buffer(cls, buf):
+        name = bytes(buf[:16]).strip(b'\0').strip(b'\xff')
+        rx_freq = (bcd2int(buf[16]) * 10000000 +
+                   bcd2int(buf[17]) * 100000 +
+                   bcd2int(buf[18]) * 1000 +
+                   bcd2int(buf[19]) * 10)
+        tx_freq = (bcd2int(buf[20]) * 10000000 +
+                   bcd2int(buf[21]) * 100000 +
+                   bcd2int(buf[22]) * 1000 +
+                   bcd2int(buf[23]) * 10)
+        chtype = buf[24]
+
+
+        return cls(name, rx_freq, tx_freq, chtype)
+
 
 
 @dataclass
-class Channel:
-    name: str
+class Zone:
+    name: bytes
 
-class OpenGD77Codeplug:
-    """Also
+    @classmethod
+    def from_buffer(cls, buf):
+        return cls()
+
+
+class Codeplug:
+    """
+    To add:
        * radio name get/set
        * dmrid get/set
        * boot screen data
        * vfo ch get/set
        * opengd77 custom data (boot image)
-
     """
 
-    # mode, file_offset, radio_addr, length
+    @dataclass(frozen=True)
+    class ChunkedBlock:
+        """Helper to describe and iterate over blocks of memory
+        in a bytearray.
+        """
+
+        raw_offset: int
+        preamble: int
+        item_size: int
+        item_count: int
+
+        @property
+        def offset(self):
+            return self.raw_offset + self.preamble
+
+        @property
+        def size(self):
+            return self.item_count * self.item_size + self.preamble
+
+        def walk(self, buf):
+            for i in range(self.item_count):
+                addr = self.offset + i * self.item_size
+                data = buf[addr : addr+self.item_size]
+                # log.debug(f"walk {i} 0x{addr:08x}-0x{addr+self.item_size:08x} {len(data)}")
+                yield data
+
+
+    CPPart = namedtuple('CPPart', ['mode', 'file_addr', 'radio_addr', 'size'])
     parts = (
-        (MODE_READ_EEPROM, 0x00E0, 0x00E0, 0x5f20),
-        (MODE_READ_EEPROM, 0x7500, 0x7500, 0x3B00),
-        (MODE_READ_FLASH, 0xB000, 0x7b000,0x13E60),
-        (MODE_READ_FLASH, 0x1EE60, 0x00000, 0x11A0),
+        CPPart(MODE_READ_EEPROM, 0x00E0, 0x00E0, 0x5f20),
+        CPPart(MODE_READ_EEPROM, 0x7500, 0x7500, 0x3B00),
+        CPPart(MODE_READ_FLASH, 0xB000, 0x7b000, 0x13E60),
+        CPPart(MODE_READ_FLASH, 0x1EE60, 0x00000, 0x11A0),
     )
 
-    contacts_block =    ChunkedBlock(0x17620, 0, 24, 1024)
-    tglist_block =      ChunkedBlock(0x1d620, 128, 80, 76)
-    zones_block =       ChunkedBlock(0x08010, 32, 48, 250)
-    scan_lists_block =  ChunkedBlock(0x01790, 64, 88, 64)
-    channels1_block =   ChunkedBlock(0x03780, 16, 56, 128)
-    channels2_block =   ChunkedBlock(0xb1b0, 16, 56, 896)
+    blocks = {
+        'scan_lists': ChunkedBlock(0x1790, 64, 88, 64),
+        'channels1': ChunkedBlock(0x3780, 16, 56, 128),
+        'zones': ChunkedBlock(0x8010, 32, 48, 250),
+        'channels2': ChunkedBlock(0xb1b0, 16, 56, 128),
+        'contacts': ChunkedBlock(0x17620, 0, 24, 1024),
+        'tglist': ChunkedBlock(0x1d620, 128, 80, 76),
+    }
 
-    @staticmethod
-    def radio2file(address):
-        for mode, file_offset, radio_addr, length in self.parts:
-            if address >= radio_addr and address < radio_addr + length:
-                offset = radio_addr - file_offset
+    @classmethod
+    def dump_parts(cls):
+        log.debug("CODEPLUG FILE PARTS")
+        for i, p in enumerate(cls.parts):
+            start = p.file_addr
+            end = start + p.size
+            log.debug(f"{i: 2} file  0x{start:08x}-0x{end:08x} size={p.size}")
+            if p.file_addr == p.radio_addr:
+                continue
+            start = p.radio_addr
+            end = start + p.size
+            log.debug(f"{i: 2} radio 0x{start:08x}-0x{end:08x} size={p.size}")
+
+
+    @classmethod
+    def radio2file(cls, addr):
+        """Translate address from radio space to file space"""
+        for part in cls.parts:
+            if addr >= radio_addr and address < radio_addr + length:
+                offset = radio_addr - file_addr
                 return address - offset
         else:
             return address
@@ -213,7 +266,7 @@ class OpenGD77Codeplug:
         # self.data[0xd8:8] = bytearray([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]) # ???
 
     def contacts(self):
-        for chunk in self.contacts_block.walk(self.data):
+        for chunk in self.blocks['contacts'].walk(self.data):
             if chunk[0] == 0xff:
                 continue
             c = Contact.from_buffer(chunk)
@@ -221,14 +274,45 @@ class OpenGD77Codeplug:
             yield c
 
     def talk_groups(self):
-        tgb = self.tglist_block
+        tgb = self.blocks['tglist']
         table = self.data[tgb.raw_offset : tgb.offset]
-        print(table)
+        log.info(f"TGs {table}")
         for chunk in tgb.walk(self.data):
             tg = TGList.from_buffer(chunk)
             if not len(tg.name):
                 continue
             yield tg
+
+    def _channel_is_enabled(self, ch_num):
+        ch_idx = ch_num - 1
+        ch_bank = int(ch_idx / 128)
+        ch_offset = ch_idx % 128
+
+        if ch_bank == 0:
+            chb = self.channels1_block
+        else:
+            chb = self.channels2_block
+
+        bitarray = self.data[chb.raw_offset:chb.offset]
+        byte_no = int(ch_offset / 8)
+        bit_no = ch_offset % 8
+        # log.debug(f"checking {ch_num} at byte {byte_no} bit {bit_no}")
+
+        if bitarray[byte_no] >> bit_no == 0x01:
+            return True
+        return False
+
+    def channels(self):
+        for chb in (self.blocks['channels1'], self.blocks['channels2']):
+            table = self.data[chb.raw_offset : chb.offset]
+            log.info(f"walking channels {chb}, {table}")
+            # TODO: check bit
+            for i, chunk in enumerate(chb.walk(self.data)):
+                # if not self._channel_is_enabled(i+1):
+                #     continue
+                ch = Channel.from_buffer(chunk)
+                # ch.used = True
+                yield ch
 
     def __bytes__(self):
         return bytes(self.data)
@@ -403,13 +487,15 @@ class OpenGD77Radio(object):
         self._flash_green()
         self._save()
 
-        cp = OpenGD77Codeplug()
+        cp = Codeplug()
 
-        # mode, file_offset, radio_addr, len
-        for (mode, ofs, addr, length) in OpenGD77Codeplug.parts:
-            part = self._read_memory(mode, addr, length)
-            log.debug(f"read    0x{addr:08X} - 0x{addr+length:08X} len={length} / {len(part)}")
-            cp.data[ofs:ofs+length] = part
+
+        for p in Codeplug.parts:
+            part = self._read_memory(p.mode, p.radio_addr, p.size)
+            log.debug(f"read    0x{p.radio_addr:08X} - 0x" \
+                       "{p.radio_addr+p.size:08X} len={p.size}" \
+                       " / {len(part)}")
+            cp.data[p.file_addr:p.file_addr+p.size] = part
 
         self._cps_scr_close()
 
@@ -565,7 +651,7 @@ def main():
             log.info(f"Loading codeplug from {args.file}")
             with open(args.file, 'rb') as f:
                 data = f.read()
-            cp = OpenGD77Codeplug()
+            cp = Codeplug()
             cp.data = bytearray(data)
         else:
             radio = OpenGD77Radio(args.port)
@@ -574,10 +660,15 @@ def main():
         log.info(f"Loaded {len(cp)} bytes")
 
         for c in cp.contacts():
-            log.info(f"Contact {c}")
+            log.info(f"{c}")
 
         for tg in cp.talk_groups():
-            log.info(f"TG {tg}")
+            log.info(f"{tg}")
+
+        Codeplug.dump_parts()
+
+        # for ch in cp.channels():
+        #     log.info(f"{ch}")
 
     else:
         log.warning(f"not implemented: {args.cmd}")
