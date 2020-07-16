@@ -21,20 +21,25 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 """
-import sys
-import os
-import time
-import ntpath
-import getopt
-import serial
-import platform
 import argparse
+import getopt
 import logging
+import ntpath
+import os
+import platform
 import struct
-from datetime import datetime
+import sys
+import time
+from collections import namedtuple  # XXX: maybe replace with dataclass?
 from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from itertools import repeat
+from typing import List
+
+import serial
+
 
 MAX_TRANSFER_SIZE = 32
 
@@ -43,12 +48,11 @@ OPT_REBOOT                 = 1
 OPT_SAVE_SETTINGS_AND_VFOS = 2
 OPT_FLASH_GREEN_LED        = 3
 OPT_FLASH_RED_LED          = 4
+
 CODEPLUG_SIZE = 0x20000
 
 FLASH_BLOCK_SIZE = 4096
 EEPROM_SEND_SIZE = 8
-
-log = logging.getLogger()
 
 MODE_READ_FLASH = 1
 MODE_READ_EEPROM = 2
@@ -58,11 +62,16 @@ MODE_READ_WAV_BUFFER = 7
 MODE_COMPRESS_AND_ACCESS_AMBE_BUFFER = 8
 
 
-def get_parser():
+log = logging.getLogger()
+
+def bcd2int(b):
+    return ((b>>4) & 0x0f) * 10 + (b & 0x0f)
+
+def get_parsers():
     p = argparse.ArgumentParser()
 
     # TODO: use usb to find the correct serial port or list matching
-    # ports, like dmrconfig does
+    # ports by VID:PID, like dmrconfig does
     p.add_argument('--port', '-p', help="Serial port of radio",
                    default=('COM13'
                         if platform.system() == 'Windows'
@@ -79,10 +88,104 @@ def get_parser():
         'file', help="Codeplug file to load into radio",
         default="codeplug.g77")
 
-    return p
+    p_dump_codeplug = sp.add_parser('dump')
+    p_dump_codeplug.add_argument(
+        'file', help="Where to store codeplug from radio",
+        nargs="?")
+
+    return p, sp
+
+
+@dataclass(frozen=True)
+class ChunkedBlock:
+
+    offset: int
+    item_size: int
+    item_count: int
+
+    def walk(self, buf):
+        for i in range(self.item_count):
+            addr = self.offset + i * self.item_size
+            data = buf[addr : addr+self.item_size]
+            # log.debug(f"walk {i} 0x{addr:08x}-0x{addr+self.item_size:08x} {len(data)}")
+            yield data
+
+
+# NEEDED
+#   Contacts / DTMF contacts
+#   RX Groups
+#   Zones
+#   Channels
+#   aux:
+#       radio name get/set
+#       dmrid get/set
+#       boot screen data
+#       vfo ch get/set
+#       opengd77 custom data (boot image)
+#
+
+# address       fn                   item size  number of items
+#|------------|---------------------------|---|-----------------
+# 0x17620       Contacts                    24  1024
+# 0x1D620       Rx Groups                   48  128
+# 0x8010        Zones                       48  250
+# 01790         Scan Lists                  88  64
+# 03780         Channels (first 128)        56  128
+# B1B0          Channels (remainder)        56  896
+# 01588         Emergency Systems           16  32
+
+
+@dataclass
+class Contact:
+    name: str
+    id: int
+    ctype: int
+    rx_tone: bool
+    ring_style: int
+    used: bool
+
+    @classmethod
+    def from_buffer(cls, buf):
+        name_end = min(buf.index(0xff), 15)
+        name = buf[0:name_end]
+        id = (bcd2int(buf[16]) * 1000000 +
+              bcd2int(buf[17]) * 10000 +
+              bcd2int(buf[18]) * 100 +
+              bcd2int(buf[19]) * 1)
+        ctype = buf[20]
+        rx_tone = buf[21]
+        ring_style = buf[22]
+        used = True if buf[23] == 0xff else False
+        return cls(name, id, ctype, rx_tone, ring_style, used)
+
+
+@dataclass
+class TGList:
+    name: str
+    contacts: List[int]
+
+@dataclass
+class Zone:
+    name: str
 
 
 class OpenGD77Codeplug:
+
+    # mode, file_offset, radio_addr, len
+    parts = (
+        (MODE_READ_EEPROM, 0x00E0, 0x00E0, 0x5f20),
+        (MODE_READ_EEPROM, 0x7500, 0x7500, 0x3B00),
+        (MODE_READ_FLASH, 0xB000, 0x7b000,0x13E60),
+        (MODE_READ_FLASH, 0x1EE60, 0x00000, 0x11A0),
+    )
+
+    contacts_block = ChunkedBlock(0x17620 + 0, 24, 1024)
+    rx_groups_block = ChunkedBlock(0x17620 + 128, 24, 128)
+    zones_block = ChunkedBlock(0x17620 + 32, 24, 250)
+    scan_lists_block = ChunkedBlock(0x17620 + 64, 24, 64)
+    channels1_block = ChunkedBlock(0x17620 + 16, 24, 128)
+    channels2_block = ChunkedBlock(0x17620 + 16, 24, 896)
+
     def __init__(self):
         self.data = bytearray(repeat(0xff, CODEPLUG_SIZE))
         # self.data[0x00:8] = bytearray([0x4d, 0x44, 0x2d, 0x37, 0x36, 0x30, 0x50, 0xff]) # MD-760P
@@ -90,23 +193,26 @@ class OpenGD77Codeplug:
         # self.data[0x90:5] = bytearray([0x47, 0x44, 0x2d, 0x37, 0x37]) # GD-77
         # self.data[0xd8:8] = bytearray([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]) # ???
 
+    def contacts(self):
+        for chunk in self.contacts_block.walk(self.data):
+            if chunk[0] == 0xff:
+                continue
+            c = Contact.from_buffer(chunk)
+            yield c
+
     def __bytes__(self):
         return bytes(self.data)
 
     def __str__(self):
         return str(self.data)
 
+    def __len__(self):
+        if not self.data: return 0
+        return len(self.data)
+
 class OpenGD77ProtocolError(Exception): pass
 
 class OpenGD77Radio(object):
-
-    # mode, file_offset, radio_addr, len
-    codeplug_parts = (
-        (MODE_READ_EEPROM, 0x00E0, 0x00E0, 0x5f20),
-        (MODE_READ_EEPROM, 0x7500, 0x7500, 0x3B00),
-        (MODE_READ_FLASH, 0xB000, 0x7b000,0x13E60),
-        (MODE_READ_FLASH, 0x1EE60, 0x00000, 0x11A0),
-    )
 
     def __init__(self, port):
         if port is serial.SerialBase:
@@ -270,7 +376,7 @@ class OpenGD77Radio(object):
         cp = OpenGD77Codeplug()
 
         # mode, file_offset, radio_addr, len
-        for (mode, ofs, addr, length) in self.codeplug_parts:
+        for (mode, ofs, addr, length) in OpenGD77Codeplug.parts:
             part = self._read_memory(mode, addr, length)
             log.debug(f"read    0x{addr:08X} - 0x{addr+length:08X} len={length} / {len(part)}")
             cp.data[ofs:ofs+length] = part
@@ -398,30 +504,50 @@ def main():
     logging.basicConfig(level=logging.DEBUG, stream=sys.stderr,
                         format="%(asctime)-15s %(message)s")
 
-    parser = get_parser()
+    parser, subparsers = get_parsers()
     args = parser.parse_args()
 
-    radio = OpenGD77Radio(args.port)
+    if args.cmd not in subparsers.choices:
+        log.info("No command given.")
+        sys.exit(1)
 
     if args.cmd == 'read':
         if not args.file.endswith('.g77'):
             args.file = f"{args.file}.g77"
         log.info(f"Reading codeplug from {args.port} into {args.file}")
+        radio = OpenGD77Radio(args.port)
         cp = radio.read_codeplug()
         log.info(f"Read {len(cp.data)} bytes")
         with open(args.file, 'wb') as f:
             f.write(cp.data)
 
-    if args.cmd == 'write':
+    elif args.cmd == 'write':
+
+        log.error("Writing still not reworked and tested, so no.")
+        sys.exit(5)
+
         log.info(f"Writing codeplug from {args.file} into {args.port} NOT")
         with open(args.file, 'r') as f:
             data = f.read()
 
+    elif args.cmd == 'dump':
+        if args.file and os.path.exists(args.file):
+            log.info(f"Loading codeplug from {args.file}")
+            with open(args.file, 'rb') as f:
+                data = f.read()
+            cp = OpenGD77Codeplug()
+            cp.data = bytearray(data)
+        else:
+            radio = OpenGD77Radio(args.port)
+            cp = radio.read_codeplug()
 
-        # setConfig(ser, args.file)
+        log.info(f"Loaded {len(cp)} bytes")
 
-    # if (ser.is_open):
-    #     ser.close()
+        for c in cp.contacts():
+            log.info(f"Contact {c}")
+
+    else:
+        log.warning(f"not implemented: {args.cmd}")
 
 
 if __name__ == '__main__':
