@@ -66,6 +66,8 @@ def get_parsers():
                         if platform.system() == 'Windows'
                         else '/dev/ttyACM0'))
 
+    p.add_argument('-v', '--verbose', default=False, action='store_true')
+
     sp = p.add_subparsers(dest='cmd')
     p_read_codeplug = sp.add_parser('read', help="Read codeplug from radio")
     p_read_codeplug.add_argument(
@@ -399,11 +401,13 @@ class OpenGD77Radio(object):
 
 
 def main():
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout,
-                        format="%(asctime)-15s %(message)s")
 
     parser, subparsers = get_parsers()
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        stream=sys.stdout, format="%(asctime)-15s %(message)s")
 
     if args.cmd not in subparsers.choices:
         log.info("No command given.")
@@ -443,7 +447,6 @@ def main():
             cp = radio.read_codeplug()
 
         log.info(f"Loaded {len(cp)} bytes")
-
 
         log.info("*** Contacts ***")
         for c in cp.contacts():

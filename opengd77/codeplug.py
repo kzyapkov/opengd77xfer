@@ -22,7 +22,7 @@ class Contact:
     name: bytes
     id: int
     ctype: int
-    rx_tone: bool
+    rx_tone: int
     ring_style: int
     used: int
 
@@ -47,7 +47,7 @@ class Contact:
 @dataclass
 class TGList:
     name: bytes
-    contacts: List[int]
+    contact_numbers: List[int]
 
     index: int = -1
 
@@ -68,32 +68,86 @@ class TGList:
 @dataclass
 class Channel:
     name: bytes
-    rx_freq: int # Hz
-    tx_freq: int # Hz
-    chtype: int
-    # TOT: int # 15s increments?
-    # TOT_rekey: int # s
-    # admit: int
-
-    used: bool = False
+    rx_freq: int    # Hz
+    tx_freq: int    # Hz
+    mode: int       # 1=digital 0=analog
+    rx_ref_freq: int
+    tx_ref_freq: int
+    tot: int        # 15 second increments
+    tot_rekey: int  # seconds
+    admit: int
+    rssi_threshold: int
+    scanlist_index: int
+    rx_tone: int
+    tx_tone: int
+    voice_emphasis: int
+    tx_sig: int
+    unmute_rule: int
+    rx_sig: int
+    arts_interval: int
+    encrypt: int
+    rx_color: int
+    rx_grouplist: int
+    tx_color: int
+    emergency_system: int
+    contact: int
+    flag1: int
+    flag2: int
+    flag3: int
+    flag4: int # bits... 0x80 = Power, 0x40 = Vox, 0x20 = AutoScan, 0x10 = LoneWoker, 0x08 = AllowTalkaround, 0x04 = OnlyRx, 0x02 = Channel width, 0x01 = Squelch
+    vfo_offset: int
+    vfo_flag: int
+    sql: int
 
     index: int = -1
 
     @classmethod
     def from_buffer(cls, buf):
         name = bytes(buf[:16]).strip(b'\0').strip(b'\xff')
-        rx_freq = (bcd2int(buf[16]) * 10000000 +
-                   bcd2int(buf[17]) * 100000 +
-                   bcd2int(buf[18]) * 1000 +
-                   bcd2int(buf[19]) * 10)
-        tx_freq = (bcd2int(buf[20]) * 10000000 +
-                   bcd2int(buf[21]) * 100000 +
-                   bcd2int(buf[22]) * 1000 +
-                   bcd2int(buf[23]) * 10)
-        chtype = buf[24]
+        rx_freq = (bcd2int(buf[16]) * 10 +
+                   bcd2int(buf[17]) * 1000 +
+                   bcd2int(buf[18]) * 100000 +
+                   bcd2int(buf[19]) * 10000000)
+        tx_freq = (bcd2int(buf[20]) * 10 +
+                   bcd2int(buf[21]) * 1000 +
+                   bcd2int(buf[22]) * 100000 +
+                   bcd2int(buf[23]) * 10000000)
+        mode = buf[24]
+        rx_ref_freq = buf[25]
+        tx_ref_freq = buf[26]
+        tot = buf[27]
+        tot_rekey = buf[28]
+        admit = buf[29]
+        rssi_threshold = buf[30]
+        scanlist_index = buf[31]
+        rx_tone = buf[32:34] # TODO: BCD
+        tx_tone = buf[34:36]
+        voice_emphasis = buf[36]
+        tx_sig = buf[37]
+        unmute_rule = buf[38]
+        rx_sig = buf[39]
+        arts_interval = buf[40]
+        encrypt = buf[41]
+        rx_color = buf[42]
+        rx_grouplist = buf[43]
+        tx_color = buf[44]
+        emergency_system = buf[45]
+        contact = buf[46:48] # TODO: LE integer
+        flag1 = buf[48]
+        flag2 = buf[49]
+        flag3 = buf[50]
+        flag4 = buf[51]
+        vfo_offset = buf[52:54]
+        vfo_flag = buf[54]
+        sql = buf[55]
 
 
-        return cls(name, rx_freq, tx_freq, chtype)
+        return cls(name, rx_freq, tx_freq, mode, rx_ref_freq, tx_ref_freq, tot,
+                   tot_rekey, admit, rssi_threshold, scanlist_index, rx_tone,
+                   tx_tone, voice_emphasis, tx_sig, unmute_rule, rx_sig,
+                   arts_interval, encrypt, rx_color, rx_grouplist, tx_color,
+                   emergency_system, contact, flag1, flag2, flag3, flag4,
+                   vfo_offset, vfo_flag, sql)
 
 
 
@@ -158,22 +212,19 @@ class Codeplug:
         ChunkedBlock(0x3780, 16, 56, 128),
 
         # FLASH
+        # region 0xb1c0 - 0xc470 contains 7 banks of channels,
+        # each with a 16-byte "enable" bitfield and 128 slots 56 bytes each
+        # XXX: find a way to generate this in code without a metaclass
         ChunkedBlock(0x0b1b0, 16, 56, 128),
         ChunkedBlock(0x0cdc0, 16, 56, 128),
         ChunkedBlock(0x0e9d0, 16, 56, 128),
         ChunkedBlock(0x105e0, 16, 56, 128),
-        ChunkedBlock(0x121f0, 16, 56, 128),
-        ChunkedBlock(0x13e00, 16, 56, 128),
-        ChunkedBlock(0x15a10, 16, 56, 128),
-    ]
 
-    # region 0xb1c0 - 0xc470 contains 7 banks of channels,
-    # each with a 16-byte "enable" bitfield and 128 slots 56 bytes each
-    # I wish this worked, but it doesn't. Maybe there's a way to do it
-    # without a metaclass.
-    # blocks.update(((f"ch_flash_{i}",
-    #                 ChunkedBlock(0xb1c0 + i*(128*56 + 16), 16, 56, 896))
-    #                 for i in range(7)))
+        # these don't seem to be initialized, what is the limit?
+        # ChunkedBlock(0x121f0, 16, 56, 128),
+        # ChunkedBlock(0x13e00, 16, 56, 128),
+        # ChunkedBlock(0x15a10, 16, 56, 128),
+    ]
 
     CPPart = namedtuple('CPPart',
                         ['mode', 'file_addr', 'radio_addr', 'size'])
@@ -264,17 +315,18 @@ class Codeplug:
         table = self.data[chb.raw_offset : chb.offset]
         log.debug(f"walking channels at 0x{chb.offset:08x}, {table}")
         for i, chunk in enumerate(chb.walk(self.data)):
-            # log.debug(f"{i} {chunk}")
-            # if not self._channel_is_enabled(i+1):
-            #     continue
+            if (table[i // 8] >> (i % 8)) & 0x01 == 0x00:
+                continue
             ch = Channel.from_buffer(chunk)
-            if len(ch.name) and ch.chtype <= 2:
-                ch.index = i
-                yield ch
+            ch.index = i
+            if not len(ch.name) or ch.mode >= 2:
+                continue
+            log.debug(f"{i} {chunk}")
+            yield ch
 
     def channels(self):
         for i, chb in enumerate(self.channel_blocks):
-            # log.debug(f"CHANNEL BANK {i}")
+            log.debug(f"CHANNEL BANK {i}")
             for ch in self._channel_block(chb):
                 ch.index += i*128
                 yield ch
