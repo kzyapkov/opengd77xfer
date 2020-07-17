@@ -1,3 +1,22 @@
+"""
+Copyright (C) 2020  LZ1CK, Kiril Zyapkov
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+"""
+
 import logging
 import struct
 from collections import namedtuple
@@ -9,8 +28,15 @@ from typing import List
 log = logging.getLogger(__name__)
 
 
-def bcd2int(b):
-    return ((b>>4) & 0x0f) * 10 + (b & 0x0f)
+def bcd2int(buf, big_endian=False):
+    if isinstance(buf, int):
+        buf = (buf, )
+    res = 0
+    if big_endian:
+        buf = reversed(buf)
+    for i, b in enumerate(buf):
+        res += (((b>>4) & 0x0f) * 10 + (b & 0x0f)) * (100 ** i)
+    return res
 
 
 class MemType(IntEnum):
@@ -30,12 +56,10 @@ class Contact:
 
     @classmethod
     def from_buffer(cls, buf):
+        assert(len(buf) == 24)
         name_end = min(buf.index(0xff), 15)
         name = bytes(buf[0:name_end])
-        id = (bcd2int(buf[16]) * 1000000 +
-              bcd2int(buf[17]) * 10000 +
-              bcd2int(buf[18]) * 100 +
-              bcd2int(buf[19]) * 1)
+        id = bcd2int(buf[16:20], True)
         ctype = buf[20]
         rx_tone = buf[21]
         ring_style = buf[22]
@@ -53,6 +77,7 @@ class TGList:
 
     @classmethod
     def from_buffer(cls, buf):
+        assert len(buf) == 80
         name = bytes(buf[:16]).strip(b'\0').strip(b'\xff')
         contacts = []
         for ci in range(16):
@@ -90,7 +115,7 @@ class Channel:
     rx_grouplist: int
     tx_color: int
     emergency_system: int
-    contact: int
+    contact_num: int
     flag1: int
     flag2: int
     flag3: int
@@ -101,17 +126,17 @@ class Channel:
 
     index: int = -1
 
+    @property
+    def num(self):
+        if index >= 0:
+            return index + 1
+        return 0
+
     @classmethod
     def from_buffer(cls, buf):
         name = bytes(buf[:16]).strip(b'\0').strip(b'\xff')
-        rx_freq = (bcd2int(buf[16]) * 10 +
-                   bcd2int(buf[17]) * 1000 +
-                   bcd2int(buf[18]) * 100000 +
-                   bcd2int(buf[19]) * 10000000)
-        tx_freq = (bcd2int(buf[20]) * 10 +
-                   bcd2int(buf[21]) * 1000 +
-                   bcd2int(buf[22]) * 100000 +
-                   bcd2int(buf[23]) * 10000000)
+        rx_freq = bcd2int(buf[16:20]) * 10
+        tx_freq = bcd2int(buf[20:24]) * 10
         mode = buf[24]
         rx_ref_freq = buf[25]
         tx_ref_freq = buf[26]
@@ -120,8 +145,8 @@ class Channel:
         admit = buf[29]
         rssi_threshold = buf[30]
         scanlist_index = buf[31]
-        rx_tone = buf[32:34] # TODO: BCD
-        tx_tone = buf[34:36]
+        rx_tone = bcd2int(buf[32:34])
+        tx_tone = bcd2int(buf[34:36])
         voice_emphasis = buf[36]
         tx_sig = buf[37]
         unmute_rule = buf[38]
@@ -132,7 +157,7 @@ class Channel:
         rx_grouplist = buf[43]
         tx_color = buf[44]
         emergency_system = buf[45]
-        contact = buf[46:48] # TODO: LE integer
+        contact_num = struct.unpack_from("<H", buf, 46)[0]
         flag1 = buf[48]
         flag2 = buf[49]
         flag3 = buf[50]
@@ -141,12 +166,11 @@ class Channel:
         vfo_flag = buf[54]
         sql = buf[55]
 
-
         return cls(name, rx_freq, tx_freq, mode, rx_ref_freq, tx_ref_freq, tot,
                    tot_rekey, admit, rssi_threshold, scanlist_index, rx_tone,
                    tx_tone, voice_emphasis, tx_sig, unmute_rule, rx_sig,
                    arts_interval, encrypt, rx_color, rx_grouplist, tx_color,
-                   emergency_system, contact, flag1, flag2, flag3, flag4,
+                   emergency_system, contact_num, flag1, flag2, flag3, flag4,
                    vfo_offset, vfo_flag, sql)
 
 
@@ -154,22 +178,34 @@ class Channel:
 @dataclass
 class Zone:
     name: bytes
-
+    channel_nums: List[int]
     index: int = -1
 
     @classmethod
     def from_buffer(cls, buf):
-        return cls()
+        name = bytes(buf[:16]).strip(b'\0').strip(b'\xff')
+        num_ch = (len(buf) - 16) // 2
+        channel_nums = []
+        for ci in range(num_ch):
+            start = 16 + ci * 2
+            end = start + 2
+            cn = struct.unpack("<H", buf[start:end])[0]
+            if cn:
+                channel_nums.append(cn)
+            else:
+                break
+
+        return cls(name, channel_nums)
 
 
 class Codeplug:
     """
     To add:
-       * radio name get/set
-       * dmrid get/set
-       * boot screen data
-       * vfo ch get/set
-       * opengd77 custom data (boot image)
+        * radio name get/set
+        * dmrid get/set
+        * boot screen data
+        * vfo ch get/set
+        * opengd77 custom data (boot image)
     """
 
     SIZE = 0x20000
@@ -190,16 +226,19 @@ class Codeplug:
         def size(self):
             return self.item_count * self.item_size + self.preamble
 
+        def chunk(self, buf, idx):
+            addr = self.offset + idx * self.item_size
+            # # log.debug(f"walk {i} 0x{addr:08x}-0x{addr+self.item_size:08x} {len(data)}")
+            return buf[addr : addr+self.item_size]
+
         def walk(self, buf):
             for i in range(self.item_count):
-                addr = self.offset + i * self.item_size
-                data = buf[addr : addr+self.item_size]
-                # log.debug(f"walk {i} 0x{addr:08x}-0x{addr+self.item_size:08x} {len(data)}")
-                yield data
+                yield self.chunk(buf, i)
 
     blocks = {
         'scan_lists': ChunkedBlock(0x1790, 64, 88, 64),
-        'zones': ChunkedBlock(0x8010, 32, 48, 250),
+        # 'zones': ChunkedBlock(0x8010, 32, 48/, 250),
+        'zones': ChunkedBlock(0x8010, 32, 16+(2*80), 250),
         'contacts': ChunkedBlock(0x17620, 0, 24, 1024),
         'tglist': ChunkedBlock(0x1d620, 0x80, 80, 76),
 
@@ -281,10 +320,6 @@ class Codeplug:
 
     def __init__(self):
         self.data = bytearray(repeat(0xff, self.SIZE))
-        # self.data[0x00:8] = bytearray([0x4d, 0x44, 0x2d, 0x37, 0x36, 0x30, 0x50, 0xff]) # MD-760P
-        # self.data[0x80:8] = bytearray([0x00, 0x04, 0x70, 0x04, 0x36, 0x01, 0x74, 0x01]) # freqs
-        # self.data[0x90:5] = bytearray([0x47, 0x44, 0x2d, 0x37, 0x37]) # GD-77
-        # self.data[0xd8:8] = bytearray([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]) # ???
 
     def contacts(self):
         for i, chunk in enumerate(self.blocks['contacts'].walk(self.data)):
@@ -330,6 +365,29 @@ class Codeplug:
             for ch in self._channel_block(chb):
                 ch.index += i*128
                 yield ch
+
+    @property
+    def ch_per_zone(self):
+        x = self.data[0x806f]
+        if x >= 0 and x <= 4:
+            return 80
+        return 16
+
+    def _zone_addresses(self):
+        zb = self.blocks['zones']
+        bitmap = self.data[zb.raw_offset:zb.raw_offset+32]
+        for byte_i in range(32):
+            for bit_i in range(8):
+                if bitmap[byte_i] & (1 << bit_i):
+                    idx = byte_i * 8 + bit_i
+                    yield zb.offset + idx * (16 + (2 * self.ch_per_zone))
+
+    def zones(self):
+        for i, za in enumerate(self._zone_addresses()):
+            z = Zone.from_buffer(self.data[za:za + (2 * self.ch_per_zone)])
+            z.index = i
+            yield z
+
 
     def __bytes__(self):
         return bytes(self.data)

@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Copyright (C) 2020  OH1FSS, juhani.jaakola@iki.fi
                     F1RMB, Daniel Caujolle-Bert <f1rmb.daniel@gmail.com>
@@ -448,18 +446,16 @@ def main():
 
         log.info(f"Loaded {len(cp)} bytes")
 
-        log.info("*** Contacts ***")
-        for c in cp.contacts():
-            log.info(f"{c.index}\t{c}")
+        def dump_seq(seq, name):
+            log.info(f"*** {name} ***")
+            for i in seq:
+                log.info(f"{i.index}\t{i}")
 
-        log.info("*** Talk Groups ***")
-        for tg in cp.talk_groups():
-            log.info(f"{tg.index}\t{tg}")
+        dump_seq(cp.contacts(), "Contacts")
+        dump_seq(cp.talk_groups(), "Talk Groups")
+        dump_seq(cp.channels(), "Channels")
+        dump_seq(cp.zones(), "Zones")
 
-        log.info("*** Channels ***")
-        for ch in cp.channels():
-            log.info(f"{ch.index}\t{ch}")
-            pass
 
     elif args.cmd == 'backup_calib':
         radio = OpenGD77Radio(args.port)
