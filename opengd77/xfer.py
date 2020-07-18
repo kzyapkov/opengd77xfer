@@ -405,7 +405,7 @@ def main():
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        stream=sys.stdout, format="%(asctime)-15s %(message)s")
+        stream=sys.stdout, format="%(asctime)-15s %(filename)s:%(lineno)d %(message)s")
 
     if args.cmd not in subparsers.choices:
         log.info("No command given.")
@@ -451,10 +451,13 @@ def main():
             for i in seq:
                 log.info(f"{i.index}\t{i}")
 
-        dump_seq(cp.contacts(), "Contacts")
-        dump_seq(cp.talk_groups(), "Talk Groups")
-        dump_seq(cp.channels(), "Channels")
-        dump_seq(cp.zones(), "Zones")
+        dump_seq(cp.contacts, "Contacts")
+        dump_seq(cp.talk_groups, "Talk Groups")
+        dump_seq(cp.channels, "Channels")
+        dump_seq(cp.zones, f"Zones: {len(cp.zones)}")
+
+        log.debug(bytes(cp.zones.zbits))
+        log.debug(f"channels per zone: {cp.zones.ch_per_zone}")
 
 
     elif args.cmd == 'backup_calib':
