@@ -94,8 +94,16 @@ def get_parsers():
 
 
 class OpenGD77ProtocolError(Exception): pass
+from functools import wraps
 
 class OpenGD77Radio(object):
+
+    def require_port_session(f):
+        @wraps(f)
+        def wrapper(self, *args, **kwds):
+            with self.port_session():
+                return f(self, *args, **kwds)
+        return wrapper
 
     def __init__(self, port):
         if port is serial.SerialBase:
@@ -109,11 +117,12 @@ class OpenGD77Radio(object):
         self.port.timeout = 2.0
         self.port.write_timeout = 2.0
 
-        if not self.port.is_open:
-            self.port.open()
+        if self.port.is_open:
+            self.port.close()
 
         #     log.info("\r - {0} 0x{1:X} bytes: {2}%".format(rw,length,sofar * 100 // length), end='')
         self._update_progress = None
+        self._session_in_progress = False
 
     @property
     def update_progress(self):
@@ -143,6 +152,20 @@ class OpenGD77Radio(object):
         t, self.port.timeout = self.port.timeout, timeout
         yield self.port
         self.port.timeout = t
+
+    @contextmanager
+    def port_session(self):
+        if self._session_in_progress:
+            yield self.port
+            return
+
+        self._session_in_progress = True
+        try:
+            self.port.open()
+            yield self.port
+        finally:
+            self.port.close()
+            self._session_in_progress = False
 
     def _send_C(self, req_bytes, timeout=3.0):
         req = bytearray(b'C')
@@ -223,18 +246,17 @@ class OpenGD77Radio(object):
 
         (c, got_len) = struct.unpack(">BH", resp)
         if got_len != length:
-            log.warning(f"wanted {length} bytes, got {got_len}")
+            log.warning(f"requested {length} bytes, but expecting {got_len}")
             # raise OpenGD77ProtocolError()
 
         with self.serial_timeout(3):
             data = self.port.read(got_len)
 
         if len(data) != got_len:
-            log.warn(f"read {len(data)} bytes but wanted {got_len}")
-            raise OpenGD77ProtocolError()
+            raise OpenGD77ProtocolError(
+                    f"read {len(data)} bytes but expected {got_len}")
 
         return data
-
 
     def _read_memory(self, mode, addr: int, length: int):
         buf = bytearray()
@@ -249,6 +271,7 @@ class OpenGD77Radio(object):
 
         return buf
 
+    @require_port_session
     def read_codeplug(self) -> Codeplug:
         """Load Codeplug data from radio"""
 
@@ -261,7 +284,7 @@ class OpenGD77Radio(object):
         try:
             for p in Codeplug.parts:
                 pd = self._read_memory(p.mode, p.radio_addr, p.size)
-                cp.data[p.file_addr:p.file_addr+p.size] = pd
+                cp.data[p.file_addr : p.file_addr+p.size] = pd
 
                 log.debug((f"read    0x{p.radio_addr:08x} "
                         f"- 0x{p.radio_addr+p.size:08x} "
@@ -272,6 +295,7 @@ class OpenGD77Radio(object):
 
         return cp
 
+    @require_port_session
     def backup_calibration(self):
         self._show_screen((b"CPS", b"Reading", b"Codeplug"))
         self._flash_green()
@@ -384,7 +408,7 @@ class OpenGD77Radio(object):
         log.info("")
         return True
 
-
+    @require_port_session
     def write_codeplug(self, codeplug):
         self._show_screen((b"CPS", b"Reading", b"Codeplug"))
         self._flash_red()
@@ -456,7 +480,7 @@ def main():
         dump_seq(cp.channels, "Channels")
         dump_seq(cp.zones, f"Zones: {len(cp.zones)}")
 
-        log.debug(bytes(cp.zones.zbits))
+        log.debug(f"zone bits: {cp.zones.zbits.hex()}")
         log.debug(f"channels per zone: {cp.zones.ch_per_zone}")
 
 

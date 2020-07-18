@@ -42,6 +42,10 @@ def bcd2int(buf, big_endian=False):
 class MemType(IntEnum):
     FLASH = 1
     EEPROM = 2
+    MCU_ROM = 5
+    DISPLAY_BUFFER = 6
+    WAV_BUFFER = 7
+    COMPRESSED_AMBE_BUFFER = 8
 
 
 @dataclass
