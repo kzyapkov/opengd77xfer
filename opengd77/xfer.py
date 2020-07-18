@@ -36,20 +36,7 @@ import serial
 from .codeplug import Channel, Codeplug, Contact, MemType, TGList, Zone
 
 MAX_TRANSFER_SIZE = 32
-
-OPT_SAVE_SETTINGS_NOT_VFOS = 0
-OPT_REBOOT                 = 1
-OPT_SAVE_SETTINGS_AND_VFOS = 2
-OPT_FLASH_GREEN_LED        = 3
-OPT_FLASH_RED_LED          = 4
-
 FLASH_BLOCK_SIZE = 4096
-EEPROM_SEND_SIZE = 8
-
-# MODE_READ_MCU_ROM = 5
-# MODE_READ_DISPLAY_BUFFER = 6
-# MODE_READ_WAV_BUFFER = 7
-# MODE_COMPRESS_AND_ACCESS_AMBE_BUFFER = 8
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +53,11 @@ def get_parsers():
 
     p.add_argument('-v', '--verbose', default=False, action='store_true')
 
+    # def add_file_arg(p, default=None, help="")
+    #     p.add_argument('file', help=help, default=default)
+
     sp = p.add_subparsers(dest='cmd')
+
     p_read_codeplug = sp.add_parser('read', help="Read codeplug from radio")
     p_read_codeplug.add_argument(
         'file', help="Where to store codeplug from radio",
@@ -79,11 +70,22 @@ def get_parsers():
 
     p_backup_calib = sp.add_parser('backup_calib', help="Backup calibration data")
     p_backup_calib.add_argument(
-        'file', help="Where to store EEPROM data")
+        'file', help="Where to store calibration data")
 
     p_restore_calib = sp.add_parser('restore_calib', help="Restore calibration data")
     p_restore_calib.add_argument(
+        'file', help="Where to get calibration from")
+
+    p_backup_eeprom = sp.add_parser('backup_eeprom', help="Backup calibration data")
+    p_backup_eeprom.add_argument(
+        'file', help="Where to store EEPROM data")
+
+    p_restore_eeprom = sp.add_parser('restore_eeprom', help="Restore calibration data")
+    p_restore_eeprom.add_argument(
         'file', help="Where to get EEPROM from")
+
+
+
 
     p_dump_codeplug = sp.add_parser('dump', help="Debug helper!")
     p_dump_codeplug.add_argument(
@@ -120,28 +122,7 @@ class OpenGD77Radio(object):
         if self.port.is_open:
             self.port.close()
 
-        #     log.info("\r - {0} 0x{1:X} bytes: {2}%".format(rw,length,sofar * 100 // length), end='')
-        self._update_progress = None
         self._session_in_progress = False
-
-    @property
-    def update_progress(self):
-        if callable(self._update_progress):
-            return self._update_progress
-        return None
-
-    @update_progress.setter
-    def update_progress(self, cb):
-        if callable(cb):
-            self._update_progress = cb
-
-    def _invoke_update_progress(self, progress):
-        if not callable(self._update_progress):
-            return
-        try:
-            self._update_progress(progress)
-        except Exception as e:
-            log.warning(f"Progress update failed: {e}")
 
     @contextmanager
     def serial_timeout(self, timeout):
@@ -180,24 +161,24 @@ class OpenGD77Radio(object):
             log.warning(f"No ACK byte for cmd {req[1]}")
             raise OpenGD77ProtocolError()
 
-    def _cps_scr_show(self):
+    def _C_scr_show(self):
         self._send_C(bytearray((0, )))
 
-    def _cps_scr_clear(self):
+    def _C_scr_clear(self):
         self._send_C(bytearray((1, )))
 
-    def _cps_scr_put_text(self, x, y, size, align, invert, message):
+    def _C_scr_put_text(self, x, y, size, align, invert, message):
         req = bytearray((2, x, y, size, align, invert,))
         req.extend(message[:16])
         self._send_C(req)
 
-    def _cps_scr_render(self):
+    def _C_scr_render(self):
         self._send_C(bytearray((3, )))
 
-    def _cps_scr_backlight(self):
+    def _C_scr_backlight(self):
         self._send_C(bytearray((4, )))
 
-    def _cps_scr_close(self):
+    def _C_scr_close(self):
         self._send_C(bytearray((5, )))
 
     def _command(self, option_number):
@@ -226,13 +207,13 @@ class OpenGD77Radio(object):
         self._command(6)
 
     def _show_screen(self, lines):
-        self._cps_scr_show()
-        self._cps_scr_clear()
+        self._C_scr_show()
+        self._C_scr_clear()
         for i, l in enumerate(lines[:3]):
-            self._cps_scr_put_text(0,  16*i, 3, 1, 0, l)
-        self._cps_scr_render()
+            self._C_scr_put_text(0,  16*i, 3, 1, 0, l)
+        self._C_scr_render()
 
-    def _read_memory_chunk(self, mode, addr: int, length: int):
+    def _R_memory_chunk(self, mode, addr: int, length: int):
         if length > MAX_TRANSFER_SIZE:
             length = MAX_TRANSFER_SIZE
 
@@ -258,12 +239,12 @@ class OpenGD77Radio(object):
 
         return data
 
-    def _read_memory(self, mode, addr: int, length: int):
+    def _read_memory(self, memtype, addr: int, length: int):
         buf = bytearray()
         offset = 0
         bytes_left = length
         while bytes_left:
-            data = self._read_memory_chunk(mode, addr+offset, length)
+            data = self._R_memory_chunk(memtype, addr+offset, length)
             got_bytes = len(data)
             buf.extend(data)
             bytes_left -= got_bytes
@@ -280,32 +261,44 @@ class OpenGD77Radio(object):
         self._save()
 
         cp = Codeplug()
-
         try:
-            for p in Codeplug.parts:
-                pd = self._read_memory(p.mode, p.radio_addr, p.size)
+            for p in cp.parts:
+                pd = self._read_memory(p.memtype, p.radio_addr, p.size)
                 cp.data[p.file_addr : p.file_addr+p.size] = pd
 
-                log.debug((f"read    0x{p.radio_addr:08x} "
-                        f"- 0x{p.radio_addr+p.size:08x} "
-                        f" dest=0x{p.file_addr:06x} "
-                        f"len={p.size}/{len(pd)}"))
+                log.info((f"read    0x{p.radio_addr:06x} "
+                          f"- 0x{p.radio_addr+p.size:06x} "
+                          f" dest=0x{p.file_addr:06x} "
+                          f"len=0x{p.size:05x}"))
         finally:
-            self._cps_scr_close()
+            self._C_scr_close()
 
         return cp
 
     @require_port_session
-    def backup_calibration(self):
-        self._show_screen((b"CPS", b"Reading", b"Codeplug"))
+    def read_calibration(self):
+        self._show_screen((b"CPS", b"Reading", b"Calibration"))
         self._flash_green()
         self._save()
 
         p = Codeplug.calibration
         try:
-            return self._read_memory(p.mode, p.radio_addr, p.size)
+            return self._read_memory(p.memtype, p.radio_addr, p.size)
         finally:
-            self._cps_scr_close()
+            self._C_scr_close()
+
+    @require_port_session
+    def read_eeprom(self):
+        self._show_screen((b"CPS", b"Reading", b"EEPROM"))
+        self._flash_green()
+        self._save()
+
+        p = Codeplug.eeprom
+        try:
+            return self._read_memory(p.memtype, p.radio_addr, p.size)
+        finally:
+            self._C_scr_close()
+
 
     def _W_load_sector(self, address):
         data_sector = address // 4096
@@ -356,70 +349,67 @@ class OpenGD77Radio(object):
         resp = self.port.read(2)
         return len(resp) == 2 and resp == bytes(req)
 
-    def setFlashMemoryArea(self, buf, bufStart, radioStart, length):
-        bufPos = bufStart # index in buf
-        radioPos = radioStart # address in radio
-        remaining = length
-        if radioPos % FLASH_BLOCK_SIZE != 0:
-            log.info("ERROR: radioPos "+str(radioPos)+" not aligned")
+    # def _write_flash(self, buf, bufStart, radioStart, length):
+    def _write_flash(self, data, addr, length=0):
+        if addr % FLASH_BLOCK_SIZE != 0:
+            log.error(f"{addr} not aligned")
             return False
-        if length == 0:
-            return True
 
+        remaining = len(data) if length <= 0 else length
+        chunk_addr = addr
         while remaining > 0:
             batch = min(remaining, FLASH_BLOCK_SIZE)
-            self._W_load_sector(radioPos)
-            self._W_upload_data(buf[bufPos:bufPos+batch], radioPos, batch)
+            self._W_load_sector(chunk_addr)
+            self._W_upload_data(chunk_addr, data[chunk_addr:chunk_addr+batch])
             self._W_write_sector()
-            bufPos += batch
-            radioPos += batch
+            chunk_addr += batch
             remaining -= batch
-            self.update_progress('flashing', radioPos - radioStart,length)
 
         return True
 
+    def _W_eeprom_chunk(self, data, addr):
+        length = min(len(data), MAX_TRANSFER_SIZE)
+        req = bytearray(struct.pack(">BBIH", ord('W'), 4, addr, length))
+        req.extend(data[:length])
+        self.port.write(req)
+        resp = self.port.read(2)
+        if len(resp) != 2 or resp != bytes(req[:2]):
+            raise OpenGD77ProtocolError(f"W E @{addr:x}")
+        return length
 
-    def eepromSendData(self, buf, bufStart, radioStart, length):
-        snd = bytearray(EEPROM_SEND_SIZE+MAX_TRANSFER_SIZE)
-        snd[0] = ord('W')
-        snd[1] = 4
-        bufPos = bufStart
-        radioPos = radioStart
-        remaining = length
-        while (remaining > 0):
-            batch = min(remaining,MAX_TRANSFER_SIZE)
-            snd[2] = (radioPos >> 24) & 0xFF
-            snd[3] = (radioPos >> 16) & 0xFF
-            snd[4] = (radioPos >>  8) & 0xFF
-            snd[5] = (radioPos >>  0) & 0xFF
-            snd[6] = (batch >>  8) & 0xFF
-            snd[7] = (batch >>  0) & 0xFF
-            snd[EEPROM_SEND_SIZE:EEPROM_SEND_SIZE+batch] = buf[bufPos:bufPos+batch]
-            self.port.write(snd)
-            rcv = ser.read(2)
-            if len(rcv) != 2 or rcv != bytes(snd):
-                log.info(f"ERROR: at {radioPos}")
+    def _write_eeprom(self, data, addr, length=0):
+        remaining = len(data) if length <= 0 else length
+        chunk_addr = addr
+        while remaining:
+            wrote = self._W_eeprom_chunk(data[-remaining:], chunk_addr)
+            remaining -= wrote
+            chunk_addr += wrote
 
-            bufPos += batch
-            radioPos += batch
-            remaining -= batch
-            printProgress('eepromming',radioPos - radioStart,length)
-
-        log.info("")
-        return True
+    def _write_memory(self, memtype, data, addr, length=0):
+        if memtype == MemType.EEPROM:
+            return self._write_eeprom(data, addr, length)
+        elif memtype == MemType.FLASH:
+            return self._write_flash(data, addr, length) # TODO
 
     @require_port_session
-    def write_codeplug(self, codeplug):
-        self._show_screen((b"CPS", b"Reading", b"Codeplug"))
+    def write_codeplug(self, cp: Codeplug):
+
+        self._show_screen((b"CPS", b"WRITING", b"Codeplug"))
         self._flash_red()
         self._save()
 
-        self.eepromSendData(buf, 0x00E0, 0x00E0, 0x5f20)
-        self.eepromSendData(buf, 0x7500, 0x7500, 0x3B00)
-        self.setFlashMemoryArea(buf,  0xB000,0x7b000,0x13E60)
-        self.setFlashMemoryArea(buf, 0x1EE60,0x00000, 0x11A0)
-        # cmdCloseCPSScreen(ser)
-        cmdCommand(ser,OPT_SAVE_SETTINGS_NOT_VFOS)
+        for p in cp.parts:
+            self._write_memory(p.memtype,
+                               cp.data[p.file_addr : p.file_addr + p.size],
+                               p.radio_addr, length=p.size)
+
+            log.info((f"write    0x{p.radio_addr:06x} "
+                      f"- 0x{p.radio_addr+p.size:06x} "
+                      f" dest=0x{p.file_addr:05x} "
+                      f"len=0x{p.size:04x}"))
+
+        self._save()
+        self._save_and_reboot()
 
 
 def main():
@@ -446,13 +436,13 @@ def main():
             f.write(cp.data)
 
     elif args.cmd == 'write':
-
-        log.error("Writing still not reworked and tested, so no.")
-        sys.exit(5)
-
-        log.info(f"Writing codeplug from {args.file} into {args.port} NOT")
-        with open(args.file, 'r') as f:
+        log.info(f"Writing codeplug from {args.file} into {args.port}")
+        with open(args.file, 'rb') as f:
             data = f.read()
+
+        cp = Codeplug(data)
+        radio = OpenGD77Radio(args.port)
+        radio.write_codeplug(cp)
 
     elif args.cmd == 'dump':
 
@@ -465,6 +455,7 @@ def main():
             cp = Codeplug()
             cp.data = bytearray(data)
         else:
+            log.info(f"Loading codeplug radio at {args.port}")
             radio = OpenGD77Radio(args.port)
             cp = radio.read_codeplug()
 
@@ -480,14 +471,27 @@ def main():
         dump_seq(cp.channels, "Channels")
         dump_seq(cp.zones, f"Zones: {len(cp.zones)}")
 
-        log.debug(f"zone bits: {cp.zones.zbits.hex()}")
-        log.debug(f"channels per zone: {cp.zones.ch_per_zone}")
+        log.info(f"zone bits: {cp.zones.zbits.hex()}")
+        log.info(f"channels per zone: {cp.zones.ch_per_zone}")
 
 
     elif args.cmd == 'backup_calib':
+        if not args.file.endswith('.g77calib'):
+            args.file = f"{args.file}.g77calib"
+        log.info(f"Storing calibration from {args.port} to {args.file}")
         radio = OpenGD77Radio(args.port)
-        calib = radio.backup_calibration()
-        log.info(f"calibration = {calib}")
+        data = radio.read_calibration()
+        with open(args.file, 'wb') as f:
+            f.write(data)
+
+    elif args.cmd == 'backup_eeprom':
+        if not args.file.endswith('.g77eeprom'):
+            args.file = f"{args.file}.g77eeprom"
+        log.info(f"Storing EEPROM from {args.port} to {args.file}")
+        radio = OpenGD77Radio(args.port)
+        data = radio.read_eeprom()
+        with open(args.file, 'wb') as f:
+            f.write(data)
 
     else:
         log.warning(f"not implemented: {args.cmd}")

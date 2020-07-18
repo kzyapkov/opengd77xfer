@@ -421,7 +421,7 @@ class Codeplug:
     ]
 
     CPPart = namedtuple('CPPart',
-                        ['mode', 'file_addr', 'radio_addr', 'size'])
+                        ['memtype', 'file_addr', 'radio_addr', 'size'])
     parts = (
         # EEPROM in two chunks, skippint radio settings
         # XXX: support radio settings as well?
@@ -437,6 +437,7 @@ class Codeplug:
     )
 
     calibration = CPPart(MemType.FLASH, 0, 0xf000, 224)
+    eeprom = CPPart(MemType.EEPROM, 0, 0, 0x10000)
 
     @classmethod
     def from_file(cls, filename):
@@ -492,23 +493,23 @@ class Codeplug:
             start = block.raw_offset
             end = start + block.size
             part_end = part.file_addr + part.size
-            return (start >= part.file_addr and end < part_end)
+            return start >= part.file_addr and start < part_end # and end < part_end
 
-        log.debug("-----------  CODEPLUG FILE PARTS  ------------")
-        log.debug(" N where t      start - end        size")
-        log.debug("----------------------------------------------")
+        log.info("-----------  CODEPLUG FILE PARTS  ------------")
+        log.info(" N where t      start - end        size")
+        log.info("----------------------------------------------")
         for i, p in enumerate(cls.parts):
             blocks = [bn for bn, b in cls.blocks.items() if block_in_part(b, p)]
             start = p.file_addr
             end = start + p.size
-            mode = 'E' if p.mode == MemType.EEPROM else 'f'
-            log.debug((f"{i: 2} file  {mode} 0x{start:08x} - 0x{end:08x} "
+            mode = 'E' if p.memtype == MemType.EEPROM else 'f'
+            log.info((f"{i: 2} file  {mode} 0x{start:08x} - 0x{end:08x} "
                        f"0x{p.size:06x}  {','.join(blocks)}"))
             if p.file_addr == p.radio_addr:
                 continue
             start = p.radio_addr
             end = start + p.size
-            log.debug(f"{i: 2} radio {mode} 0x{start:08x} - 0x{end:08x} 0x{p.size:06x}  {','.join(blocks)}")
+            log.info(f"{i: 2} radio {mode} 0x{start:08x} - 0x{end:08x} 0x{p.size:06x}  {','.join(blocks)}")
 
 
     @classmethod
