@@ -25,6 +25,10 @@ from enum import IntEnum
 from itertools import repeat
 from typing import List
 from functools import cached_property
+
+from .binvar import *
+
+
 log = logging.getLogger(__name__)
 
 
@@ -47,167 +51,82 @@ class MemType(IntEnum):
     WAV_BUFFER = 7
     COMPRESSED_AMBE_BUFFER = 8
 
-
-@dataclass
-class Contact:
-    name: bytes
-    id: int
-    ctype: int
-    rx_tone: int
-    ring_style: int
-    used: int
-
-    index: int = -1
-
-    @classmethod
-    def from_buffer(cls, buf):
-        assert(len(buf) == 24)
-        name = bytes(buf[:16]).strip(b'\xff').strip(b'\0')
-        if not len(name):
-            return None
-        id = bcd2int(buf[16:20], big_endian=True)
-        ctype = buf[20]
-        rx_tone = buf[21]
-        ring_style = buf[22]
-        # used = True if buf[23] == 0xff else False
-        used = buf[23]
-        return cls(name, id, ctype, rx_tone, ring_style, used)
+class IndexedBinContainer(BinContainer):
+    def __init__(self, **kw):
+        if 'index' not in kw:
+            kw['index'] = -1
+        super().__init__(**kw)
 
 
-@dataclass
-class TGList:
-    name: bytes
-    contact_numbers: List[int]
-
-    index: int = -1
-
-    @classmethod
-    def from_buffer(cls, buf):
-        assert len(buf) == 80
-        name = bytes(buf[:16]).strip(b'\0').strip(b'\xff')
-        if not len(name):
-            return None
-        contacts = []
-        for ci in range(16):
-            start = 16 + ci*2
-            end = start + 2
-            cn = struct.unpack("<H", buf[start:end])[0]
-            if cn:
-                contacts.append(cn)
-
-        return cls(name, contacts)
+class Contact(IndexedBinContainer):
+    SIZE = 24
+    name = strvar(0, 16)
+    id = bcdvar(16, 4, big_endian=True)
+    ctype = structvar(20, "B")
+    rx_tone = structvar(21, "B")
+    ring_style = structvar(22, "B")
+    used = structvar(23, "B")
 
 
-@dataclass
-class Channel:
-    name: bytes
-    rx_freq: int    # Hz
-    tx_freq: int    # Hz
-    mode: int       # 1=digital 0=analog
-    rx_ref_freq: int
-    tx_ref_freq: int
-    tot: int        # 15 second increments
-    tot_rekey: int  # seconds
-    admit: int
-    rssi_threshold: int
-    scanlist_index: int
-    rx_tone: int
-    tx_tone: int
-    voice_emphasis: int
-    tx_sig: int
-    unmute_rule: int
-    rx_sig: int
-    arts_interval: int
-    encrypt: int
-    rx_color: int
-    rx_grouplist: int
-    tx_color: int
-    emergency_system: int
-    contact_num: int
-    flag1: int
-    flag2: int
-    flag3: int
-    flag4: int # bits... 0x80 = Power, 0x40 = Vox, 0x20 = AutoScan, 0x10 = LoneWoker, 0x08 = AllowTalkaround, 0x04 = OnlyRx, 0x02 = Channel width, 0x01 = Squelch
-    vfo_offset: int
-    vfo_flag: int
-    sql: int
+class TGList(IndexedBinContainer):
+    SIZE = 80
+    name = strvar(0, 16)
+    contact_numbers = structlist(16, "<H", 16)
 
-    index: int = -1
-
-    @property
-    def num(self):
-        if index >= 0:
-            return index + 1
-        return 0
+class Channel(IndexedBinContainer):
+    SIZE = 56
+    name = strvar(0, 16)
+    rx_freq: bcdvar(16, 4, mult=10)
+    tx_freq: bcdvar(20, 4, mult=10)
+    mode: structvar(24, "B")
+    rx_ref_freq = structvar(25, "B")
+    tx_ref_freq = structvar(26, "B")
+    tot = structvar(27, "B")
+    tot_rekey = structvar(28, "B")
+    admit = structvar(29, "B")
+    rssi_threshold = structvar(30, "B")
+    scanlist_index = structvar(31, "B")
+    rx_tone = bcdvar(32, 2)
+    tx_tone = bcdvar(34, 2)
+    voice_emphasis = structvar(36, "B")
+    tx_sig = structvar(37, "B")
+    unmute_rule = structvar(38, "B")
+    rx_sig = structvar(39, "B")
+    arts_interval = structvar(40, "B")
+    encrypt = structvar(41, "B")
+    rx_color = structvar(42, "B")
+    rx_grouplist = structvar(43, "B")
+    tx_color = structvar(44, "B")
+    emergency_system = structvar(45, "B")
+    contact_num = structvar(46, "<H")
+    flag1 = structvar(48, "B")
+    flag2 = structvar(49, "B")
+    flag3 = structvar(50, "B")
+    flag4 = structvar(51, "B")
+    vfo_offset = structvar(52, "<H")
+    vfo_flag = structvar(54, "B")
+    sql = structvar(55, "B")
 
     @classmethod
     def from_buffer(cls, buf):
         name = bytes(buf[:16]).strip(b'\0').strip(b'\xff')
         if not len(name):
             return None
-        rx_freq = bcd2int(buf[16:20]) * 10
-        tx_freq = bcd2int(buf[20:24]) * 10
-        mode = buf[24]
-        rx_ref_freq = buf[25]
-        tx_ref_freq = buf[26]
-        tot = buf[27]
-        tot_rekey = buf[28]
-        admit = buf[29]
-        rssi_threshold = buf[30]
-        scanlist_index = buf[31]
-        rx_tone = bcd2int(buf[32:34])
-        tx_tone = bcd2int(buf[34:36])
-        voice_emphasis = buf[36]
-        tx_sig = buf[37]
-        unmute_rule = buf[38]
-        rx_sig = buf[39]
-        arts_interval = buf[40]
-        encrypt = buf[41]
-        rx_color = buf[42]
-        rx_grouplist = buf[43]
-        tx_color = buf[44]
-        emergency_system = buf[45]
-        contact_num = struct.unpack_from("<H", buf, 46)[0]
-        flag1 = buf[48]
-        flag2 = buf[49]
-        flag3 = buf[50]
-        flag4 = buf[51]
-        vfo_offset = struct.unpack_from("<H", buf, 52)[0]
-        vfo_flag = buf[54]
-        sql = buf[55]
-
-        return cls(name, rx_freq, tx_freq, mode, rx_ref_freq, tx_ref_freq, tot,
-                   tot_rekey, admit, rssi_threshold, scanlist_index, rx_tone,
-                   tx_tone, voice_emphasis, tx_sig, unmute_rule, rx_sig,
-                   arts_interval, encrypt, rx_color, rx_grouplist, tx_color,
-                   emergency_system, contact_num, flag1, flag2, flag3, flag4,
-                   vfo_offset, vfo_flag, sql)
+        return super().from_buffer(buf)
 
 
-
-@dataclass
-class Zone:
-    name: bytes
-    channel_nums: List[int]
-    index: int = -1
+class Zone(IndexedBinContainer):
+    SIZE = 16 + 2 * 80
+    name = strvar(0, 16)
+    channel_nums = structlist(16, "<H", 80, filter=lambda x: x != 0)
 
     @classmethod
     def from_buffer(cls, buf):
         name = bytes(buf[:16]).strip(b'\0').strip(b'\xff')
         if not len(name):
             return None
-        num_ch = (len(buf) - 16) // 2
-        channel_nums = []
-        for ci in range(num_ch):
-            start = 16 + ci * 2
-            end = start + 2
-            cn = struct.unpack("<H", buf[start:end])[0]
-            if cn:
-                channel_nums.append(cn)
-            else:
-                break
+        return super().from_buffer(buf)
 
-        return cls(name, channel_nums)
 
 @dataclass(frozen=True)
 class ChunkedBlock:
@@ -299,20 +218,6 @@ class BlockView:
 
 
 class ZonesView(BlockView):
-    # def _zone_addresses(self):
-    #     zb = self.blocks['zones']
-    #     bitmap = self.data[zb.raw_offset:zb.raw_offset+32]
-    #     for byte_i in range(32):
-    #         for bit_i in range(8):
-    #             if bitmap[byte_i] & (1 << bit_i):
-    #                 idx = byte_i * 8 + bit_i
-    #                 yield zb.offset + idx * (16 + (2 * self.ch_per_zone))
-
-    # def zones(self):
-    #     for i, za in enumerate(self._zone_addresses()):
-    #         z = Zone.from_buffer(self.data[za:za + (2 * self.ch_per_zone)])
-    #         z.index = i
-    #         yield z
 
     SIZE = 32 * 8 # number of zones supported
 
