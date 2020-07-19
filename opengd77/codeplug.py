@@ -28,7 +28,7 @@ from functools import cached_property
 log = logging.getLogger(__name__)
 
 
-def bcd2int(buf, big_endian=False):
+def bcd2int(buf, *, big_endian=False):
     if isinstance(buf, int):
         buf = (buf, )
     res = 0
@@ -65,7 +65,7 @@ class Contact:
         name = bytes(buf[:16]).strip(b'\xff').strip(b'\0')
         if not len(name):
             return None
-        id = bcd2int(buf[16:20], True)
+        id = bcd2int(buf[16:20], big_endian=True)
         ctype = buf[20]
         rx_tone = buf[21]
         ring_style = buf[22]
@@ -321,7 +321,7 @@ class ZonesView(BlockView):
         return self.chunk_blocks[0]
 
     @cached_property
-    def zbits(self):
+    def zbytes(self):
         zb = self.zblock
         return self.buf[zb.raw_offset : zb.raw_offset + 32]
 
@@ -340,12 +340,12 @@ class ZonesView(BlockView):
         bits = 0
         for byte_i in range(self.SIZE):
             for bit_i in range(8):
-                if self.zbits[byte_i] & (1 << bit_i):
+                if self.zbytes[byte_i] & (1 << bit_i):
                     bits += 1
                     if bits == key + 1:
                         idx = (byte_i * 8 + bit_i)
                         addr = zb.offset + idx * zb.item_size
-                        log.debug(f"Found zone {key} at 0x{addr:06x} (slot {idx})")
+                        # log.debug(f"Found zone {key} at 0x{addr:06x} (slot {idx})")
                         return addr
         else:
             return None
@@ -366,7 +366,7 @@ class ZonesView(BlockView):
         return z
 
     def __len__(self):
-        return sum(bin(x).count('1') for x in self.zbits)
+        return sum(bin(x).count('1') for x in self.zbytes)
 
     def filter(self, cb, key, chunk):
         return False
@@ -392,13 +392,10 @@ class Codeplug:
 
     blocks = {
         'scan_lists': ChunkedBlock(0x1790, 64, 88, 64),
-        # 'zones': ChunkedBlock(0x8010, 32, 48/, 250),
-        'zones': ChunkedBlock(0x8010, 32, 16+(2*80), 32*8), # not really ...
+        'zones': ChunkedBlock(0x8010, 32, 16+(2*80), 32*8), # special case
         'contacts': ChunkedBlock(0x17620, 0, 24, 1024),
         'tglist': ChunkedBlock(0x1d620, 0x80, 80, 76),
-
-        # 'channels1': ChunkedBlock(0x3780, 16, 56, 128),
-        # 'channels2': ChunkedBlock(0xb1c0, 0, 56, 896),
+        # channels are listed separately
     }
 
     channel_blocks = [
@@ -476,7 +473,7 @@ class Codeplug:
             i = key - chb.index_offset
             if (table[i // 8] >> (i % 8)) & 0x01 == 0x00:
                 return False
-            log.debug(f"chf True for key {key} index {i} chb {chb}")
+            log.debug(f"chf -> True for key={key} index={i} chb={chb}")
             return True
         return BlockView(self.data, Channel, *self.channel_blocks,
                          filter=chf)
@@ -499,7 +496,7 @@ class Codeplug:
         log.info(" N where t      start - end        size")
         log.info("----------------------------------------------")
         for i, p in enumerate(cls.parts):
-            blocks = [bn for bn, b in cls.blocks.items() if block_in_part(b, p)]
+            blocks = [f"{bn}@0x{b.raw_offset:04x}" for bn, b in cls.all_blocks() if block_in_part(b, p)]
             start = p.file_addr
             end = start + p.size
             mode = 'E' if p.memtype == MemType.EEPROM else 'f'
@@ -509,8 +506,14 @@ class Codeplug:
                 continue
             start = p.radio_addr
             end = start + p.size
+            blocks = [f"{bn}@0x{cls.file2radio(b.raw_offset):04x}" for bn, b in cls.all_blocks() if block_in_part(b, p)]
             log.info(f"{i: 2} radio {mode} 0x{start:08x} - 0x{end:08x} 0x{p.size:06x}  {','.join(blocks)}")
 
+    @classmethod
+    def all_blocks(cls):
+        yield from cls.blocks.items()
+        for i, chb in enumerate(cls.channel_blocks):
+            yield (f"channels_{i}", chb)
 
     @classmethod
     def radio2file(cls, addr: int) -> int:
@@ -521,6 +524,17 @@ class Codeplug:
                 return addr - offset
         else:
             return addr
+
+    @classmethod
+    def file2radio(cls, addr: int) -> int:
+        """Translate address from file space to radio space"""
+        for p in cls.parts:
+            if addr >= p.file_addr and addr < p.file_addr + p.size:
+                offset = p.file_addr - p.radio_addr
+                return addr - offset
+        else:
+            return addr
+
 
     def __bytes__(self):
         return bytes(self.data)

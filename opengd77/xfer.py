@@ -149,16 +149,19 @@ class OpenGD77Radio(object):
             self._session_in_progress = False
 
     def _send_C(self, req_bytes, timeout=3.0):
+        assert len(req_bytes)
         req = bytearray(b'C')
         req.extend(req_bytes)
-        self.port.read_all()
+        leftover = self.port.read_all()
+        if len(leftover):
+            log.warning(f"found bytes in serial buffer: {leftover}")
         self.port.write(req)
 
         with self.serial_timeout(timeout):
             resp = self.port.read(1)
 
         if len(resp) != 1 or resp[0] != ord('-'):
-            log.warning(f"No ACK byte for cmd {req[1]}")
+            log.warning(f"No ack for cmd {req[1]}")
             raise OpenGD77ProtocolError()
 
     def _C_scr_show(self):
@@ -181,8 +184,8 @@ class OpenGD77Radio(object):
     def _C_scr_close(self):
         self._send_C(bytearray((5, )))
 
-    def _command(self, option_number):
-        req = bytearray((6, option_number))
+    def _command(self, subcommand):
+        req = bytearray((6, subcommand))
         self._send_C(req)
 
     def _save_and_reboot(self):
@@ -248,7 +251,7 @@ class OpenGD77Radio(object):
             got_bytes = len(data)
             buf.extend(data)
             bytes_left -= got_bytes
-            addr += got_bytes
+            offset += got_bytes
 
         return buf
 
@@ -425,7 +428,7 @@ def main():
         log.info("No command given.")
         sys.exit(1)
 
-    if args.cmd == 'read':
+    if args.cmd == 'read': # from radio into file
         if not args.file.endswith('.g77'):
             args.file = f"{args.file}.g77"
         log.info(f"Reading codeplug from {args.port} into {args.file}")
@@ -471,8 +474,13 @@ def main():
         dump_seq(cp.channels, "Channels")
         dump_seq(cp.zones, f"Zones: {len(cp.zones)}")
 
-        log.info(f"zone bits: {cp.zones.zbits.hex()}")
-        log.info(f"channels per zone: {cp.zones.ch_per_zone}")
+        log.debug(f"zone bits: 0x{cp.zones.zbytes.hex()}")
+        log.debug(f"ch_per_zone: {cp.zones.ch_per_zone}")
+        # log.debug("zone locations:")
+        # for i in range(len(cp.zones)):
+        #     addr = cp.zones._find_addr_by_index(i)
+        #     log.debug(f"{i: 6d} 0x{addr:06x}")
+
 
 
     elif args.cmd == 'backup_calib':
