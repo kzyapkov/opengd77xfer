@@ -1,9 +1,20 @@
-# GD77transfer.py
+# opengd77xfer
 
 ## Overview
 
 I use Linux and prefer open-source. OpenGD77 is great, but there is no
 proper codeplug-editing solution for Linux. This here tries to do that.
+
+Still very raw, key features missing.
+
+## Installation
+
+    pip install git+https://github.com/kzyapkov/opengd77xfer.git
+
+should work, then
+
+    gd77xfer -h
+    gd77xfer <subcommand> -h
 
 ## Copyright
 
