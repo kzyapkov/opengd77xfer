@@ -41,60 +41,6 @@ FLASH_BLOCK_SIZE = 4096
 log = logging.getLogger(__name__)
 
 
-def get_parsers():
-    p = argparse.ArgumentParser()
-
-    # TODO: use usb to find the correct serial port or list matching
-    # ports by VID:PID, like dmrconfig does
-    p.add_argument('--port', '-p', help="Serial port of radio",
-                   default=('COM13'
-                        if platform.system() == 'Windows'
-                        else '/dev/ttyACM0'))
-
-    p.add_argument('-v', '--verbose', default=False, action='store_true')
-
-    # def add_file_arg(p, default=None, help="")
-    #     p.add_argument('file', help=help, default=default)
-
-    sp = p.add_subparsers(dest='cmd')
-
-    p_read_codeplug = sp.add_parser('read', help="Read codeplug from radio")
-    p_read_codeplug.add_argument(
-        'file', help="Where to store codeplug from radio",
-        default="codeplug.g77")
-
-    p_write_codeplug = sp.add_parser('write', help="Write codeplug to radio")
-    p_write_codeplug.add_argument(
-        'file', help="Codeplug file to load into radio",
-        default="codeplug.g77")
-
-    p_backup_calib = sp.add_parser('backup_calib', help="Backup calibration data")
-    p_backup_calib.add_argument(
-        'file', help="Where to store calibration data")
-
-    p_restore_calib = sp.add_parser('restore_calib', help="Restore calibration data")
-    p_restore_calib.add_argument(
-        'file', help="Where to get calibration from")
-
-    p_backup_eeprom = sp.add_parser('backup_eeprom', help="Backup calibration data")
-    p_backup_eeprom.add_argument(
-        'file', help="Where to store EEPROM data")
-
-    p_restore_eeprom = sp.add_parser('restore_eeprom', help="Restore calibration data")
-    p_restore_eeprom.add_argument(
-        'file', help="Where to get EEPROM from")
-
-
-
-
-    p_dump_codeplug = sp.add_parser('dump', help="Debug helper!")
-    p_dump_codeplug.add_argument(
-        'file', help="File to read from",
-        nargs="?")
-
-    return p, sp
-
-
 class OpenGD77ProtocolError(Exception): pass
 from functools import wraps
 
@@ -318,55 +264,62 @@ class OpenGD77Radio(object):
             resp = self.port.read(2)
 
         if len(resp) != 2:
-            return False
-        # XXX: yada yada yada, it's fine
-        return True
+            raise OpenGD77ProtocolError("wanted 2 bytes")
 
-    def _W_upload_data(self, offset, data):
-        extra = 8
-        req = bytearray(extra + MAX_TRANSFER_SIZE)
-        req[0] = ord('W')
-        req[1] = 2
+        if resp != bytes(req[:2]):
+            raise OpenGD77ProtocolError("W load resp mismatch {resp} {bytes(req[:2])}")
+        log.debug(f"W loaded sector 0x{data_sector:04x}")
 
-        length = len(data)
-        pos = 0
-        while length:
-            this_len = min(length, MAX_TRANSFER_SIZE)
-            req[2:extra] = struct.pack(">IH", offset, this_len)
-            req[extra:] = data[pos:pos+this_len]
+    def _W_upload_data(self, addr, data):
+        total = len(data)
+        remaining = len(data)
+        data_pos = 0
+        while remaining:
+            this_len = min(remaining, MAX_TRANSFER_SIZE)
+            req = bytearray(struct.pack(">BBIH", ord('W'), 2, addr, this_len))
+            assert len(req) == 8
+            req.extend(data[data_pos : data_pos+this_len])
 
             self.port.write(req)
             resp = self.port.read(2)
 
-            if len(resp) != 2 or resp != bytes(req[0:2]):
-                return False
+            if len(resp) != 2 or resp != bytes(req[:2]):
+                raise OpenGD77ProtocolError(f"WU @0x{addr:x} resp={resp} want {bytes(req[:2])}")
 
-            length -= this_len
-            pos += this_len
+            log.debug(f"uploaded {this_len} bytes @0x{addr:x} (data@0x{data_pos:x})")
+            remaining -= this_len
+            addr += this_len
+            data_pos += this_len
 
-        return True
+        return total
+
 
     def _W_write_sector(self):
         req = bytearray((ord('W'), 3))
         self.port.write(req)
         resp = self.port.read(2)
-        return len(resp) == 2 and resp == bytes(req)
+        if len(resp) != 2 or resp != bytes(req):
+            raise OpenGD77ProtocolError("bad W sector")
+        log.debug(f"W wrote flash sector!")
 
-    # def _write_flash(self, buf, bufStart, radioStart, length):
-    def _write_flash(self, data, addr, length=0):
+    def _write_flash(self, data, addr):
         if addr % FLASH_BLOCK_SIZE != 0:
             log.error(f"{addr} not aligned")
             return False
 
-        remaining = len(data) if length <= 0 else length
-        chunk_addr = addr
+        remaining = len(data)
+        sector_addr = addr
+        data_pos = 0
         while remaining > 0:
-            batch = min(remaining, FLASH_BLOCK_SIZE)
-            self._W_load_sector(chunk_addr)
-            self._W_upload_data(chunk_addr, data[chunk_addr:chunk_addr+batch])
+            sector_len = min(remaining, FLASH_BLOCK_SIZE)
+            log.debug(f"writing F sector @0x{sector_addr:x} data 0x{data_pos} {sector_len} bytes")
+            self._W_load_sector(sector_addr)
+            self._W_upload_data(sector_addr, data[data_pos : data_pos+sector_len])
             self._W_write_sector()
-            chunk_addr += batch
-            remaining -= batch
+            log.debug(f"DONE  W F sector @0x{sector_addr:x} data @0x{data_pos:x} {sector_len} bytes")
+            sector_addr += sector_len
+            data_pos += sector_len
+            remaining -= sector_len
 
         return True
 
@@ -380,19 +333,22 @@ class OpenGD77Radio(object):
             raise OpenGD77ProtocolError(f"W E @{addr:x}")
         return length
 
-    def _write_eeprom(self, data, addr, length=0):
-        remaining = len(data) if length <= 0 else length
+    def _write_eeprom(self, data, addr):
+        remaining = len(data)
         chunk_addr = addr
         while remaining:
             wrote = self._W_eeprom_chunk(data[-remaining:], chunk_addr)
+            log.debug(f"wrote E chunk @0x{chunk_addr} {wrote} bytes")
             remaining -= wrote
             chunk_addr += wrote
 
-    def _write_memory(self, memtype, data, addr, length=0):
+    def _write_memory(self, memtype, data, addr):
         if memtype == MemType.EEPROM:
-            return self._write_eeprom(data, addr, length)
+            return self._write_eeprom(data, addr)
         elif memtype == MemType.FLASH:
-            return self._write_flash(data, addr, length) # TODO
+            return self._write_flash(data, addr)
+        else:
+            raise OpenGD77ProtocolError(f"unsupported {memtype}")
 
     @require_port_session
     def write_codeplug(self, cp: Codeplug):
@@ -402,17 +358,75 @@ class OpenGD77Radio(object):
         self._save()
 
         for p in cp.parts:
+            mtype = 'F' if p.memtype == MemType.FLASH else 'E'
+            log.debug((f"{mtype} file  start-end=0x{p.file_addr:06x}-0x{p.file_addr+p.size:06x} "
+                       f"{mtype} radio start-end=0x{p.radio_addr:06x}-0x{p.radio_addr+p.size:06x}"))
+
             self._write_memory(p.memtype,
                                cp.data[p.file_addr : p.file_addr + p.size],
-                               p.radio_addr, length=p.size)
+                               p.radio_addr)
 
-            log.info((f"write    0x{p.radio_addr:06x} "
-                      f"- 0x{p.radio_addr+p.size:06x} "
-                      f" dest=0x{p.file_addr:05x} "
+            log.info((f"write {mtype} 0x{p.file_addr:06x} "
+                      f"- 0x{p.file_addr+p.size:06x} "
+                      f" dest=0x{p.radio_addr:05x} "
                       f"len=0x{p.size:04x}"))
 
         self._save()
         self._save_and_reboot()
+
+
+def get_parsers():
+    p = argparse.ArgumentParser()
+
+    # TODO: use usb to find the correct serial port or list matching
+    # ports by VID:PID, like dmrconfig does
+    p.add_argument('--port', '-p', help="Serial port of radio",
+                   default=('COM13'
+                        if platform.system() == 'Windows'
+                        else '/dev/ttyACM0'))
+
+    p.add_argument('-v', '--verbose', default=False, action='store_true')
+
+    # def add_file_arg(p, default=None, help="")
+    #     p.add_argument('file', help=help, default=default)
+
+    sp = p.add_subparsers(dest='cmd')
+
+    p_read_codeplug = sp.add_parser('read', help="Read codeplug from radio")
+    p_read_codeplug.add_argument(
+        'file', help="Where to store codeplug from radio",
+        default="codeplug.g77")
+
+    p_write_codeplug = sp.add_parser('write', help="Write codeplug to radio")
+    p_write_codeplug.add_argument(
+        'file', help="Codeplug file to load into radio",
+        default="codeplug.g77")
+
+    p_backup_calib = sp.add_parser('backup_calib', help="Backup calibration data")
+    p_backup_calib.add_argument(
+        'file', help="Where to store calibration data")
+
+    p_restore_calib = sp.add_parser('restore_calib', help="Restore calibration data")
+    p_restore_calib.add_argument(
+        'file', help="Where to get calibration from")
+
+    p_backup_eeprom = sp.add_parser('backup_eeprom', help="Backup calibration data")
+    p_backup_eeprom.add_argument(
+        'file', help="Where to store EEPROM data")
+
+    p_restore_eeprom = sp.add_parser('restore_eeprom', help="Restore calibration data")
+    p_restore_eeprom.add_argument(
+        'file', help="Where to get EEPROM from")
+
+
+
+
+    p_dump_codeplug = sp.add_parser('dump', help="Debug helper!")
+    p_dump_codeplug.add_argument(
+        'file', help="File to read from",
+        nargs="?")
+
+    return p, sp
 
 
 def main():
@@ -440,12 +454,27 @@ def main():
 
     elif args.cmd == 'write':
         log.info(f"Writing codeplug from {args.file} into {args.port}")
-        with open(args.file, 'rb') as f:
-            data = f.read()
-
-        cp = Codeplug(data)
+        cp = Codeplug.from_file(args.file)
         radio = OpenGD77Radio(args.port)
         radio.write_codeplug(cp)
+
+    elif args.cmd == 'backup_calib':
+        if not args.file.endswith('.g77calib'):
+            args.file = f"{args.file}.g77calib"
+        log.info(f"Storing calibration from {args.port} to {args.file}")
+        radio = OpenGD77Radio(args.port)
+        data = radio.read_calibration()
+        with open(args.file, 'wb') as f:
+            f.write(data)
+
+    elif args.cmd == 'backup_eeprom':
+        if not args.file.endswith('.g77eeprom'):
+            args.file = f"{args.file}.g77eeprom"
+        log.info(f"Storing EEPROM from {args.port} to {args.file}")
+        radio = OpenGD77Radio(args.port)
+        data = radio.read_eeprom()
+        with open(args.file, 'wb') as f:
+            f.write(data)
 
     elif args.cmd == 'dump':
 
@@ -480,26 +509,6 @@ def main():
         # for i in range(len(cp.zones)):
         #     addr = cp.zones._find_addr_by_index(i)
         #     log.debug(f"{i: 6d} 0x{addr:06x}")
-
-
-
-    elif args.cmd == 'backup_calib':
-        if not args.file.endswith('.g77calib'):
-            args.file = f"{args.file}.g77calib"
-        log.info(f"Storing calibration from {args.port} to {args.file}")
-        radio = OpenGD77Radio(args.port)
-        data = radio.read_calibration()
-        with open(args.file, 'wb') as f:
-            f.write(data)
-
-    elif args.cmd == 'backup_eeprom':
-        if not args.file.endswith('.g77eeprom'):
-            args.file = f"{args.file}.g77eeprom"
-        log.info(f"Storing EEPROM from {args.port} to {args.file}")
-        radio = OpenGD77Radio(args.port)
-        data = radio.read_eeprom()
-        with open(args.file, 'wb') as f:
-            f.write(data)
 
     else:
         log.warning(f"not implemented: {args.cmd}")

@@ -172,7 +172,7 @@ class Channel:
         flag2 = buf[49]
         flag3 = buf[50]
         flag4 = buf[51]
-        vfo_offset = buf[52:54]
+        vfo_offset = struct.unpack_from("<H", buf, 52)[0]
         vfo_flag = buf[54]
         sql = buf[55]
 
@@ -345,7 +345,7 @@ class ZonesView(BlockView):
                     if bits == key + 1:
                         idx = (byte_i * 8 + bit_i)
                         addr = zb.offset + idx * zb.item_size
-                        # log.debug(f"Found zone {key} at 0x{addr:06x} (slot {idx})")
+                        log.debug(f"Found zone {key} at 0x{addr:06x} (slot {idx})")
                         return addr
         else:
             return None
@@ -386,6 +386,12 @@ class Codeplug:
         * boot screen data
         * vfo ch get/set
         * opengd77 custom data (boot image)
+
+        const int CODEPLUG_ADDR_USER_DMRID = 0x00E8;
+        const int CODEPLUG_ADDR_USER_CALLSIGN = 0x00E0; // same as radio name
+
+
+
     """
 
     SIZE = 0x20000
