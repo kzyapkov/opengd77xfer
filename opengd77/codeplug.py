@@ -67,18 +67,25 @@ class Contact(IndexedBinContainer):
     ring_style = structvar(22, "B")
     used = structvar(23, "B")
 
+    @classmethod
+    def from_buffer(cls, buf):
+        contact = super().from_buffer(buf)
+        if contact.used > 2 or len(contact.name) == 0:
+            contact.used = 0xff
+            return None
+        return contact
 
 class TGList(IndexedBinContainer):
     SIZE = 80
     name = strvar(0, 16)
-    contact_numbers = structlist(16, "<H", 16)
+    contact_numbers = structlist(16, "<H", 16, filter=lambda x: x > 0)
 
 class Channel(IndexedBinContainer):
     SIZE = 56
     name = strvar(0, 16)
-    rx_freq: bcdvar(16, 4, mult=10)
-    tx_freq: bcdvar(20, 4, mult=10)
-    mode: structvar(24, "B")
+    rx_freq = bcdvar(16, 4, mult=10)
+    tx_freq = bcdvar(20, 4, mult=10)
+    mode = structvar(24, "B")
     rx_ref_freq = structvar(25, "B")
     tx_ref_freq = structvar(26, "B")
     tot = structvar(27, "B")

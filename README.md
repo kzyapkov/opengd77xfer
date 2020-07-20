@@ -1,11 +1,22 @@
 # opengd77xfer
 
+[![works badge](https://cdn.jsdelivr.net/gh/nikku/works-on-my-machine@v0.2.0/badge.svg)](https://github.com/nikku/works-on-my-machine)
+
 ## Overview
 
 I use Linux and prefer open-source. OpenGD77 is great, but there is no
 proper codeplug-editing solution for Linux. This here tries to do that.
 
 Still very raw, key features missing.
+
+## Roadmap
+
+ Notes to self, what needs to be done:
+
+  * add radio id, callsign, other settings (?) in codeplug
+  * implement "import", i.e. modifying a binary from yaml
+  * implement packing of zones (other lists?)
+  * add csv import/export
 
 ## Installation
 
