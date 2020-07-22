@@ -22,6 +22,11 @@ import struct
 from collections import OrderedDict
 from itertools import repeat
 
+# from ruamel.yaml import YAML
+# yaml = YAML()
+# yaml.default_flow_style = None
+# yaml.indent(mapping=4, sequence=4, offset=2)
+
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +34,8 @@ class BinContainer:
 
     SIZE = None
     FILL = 0xff
+
+    include_defaults = False
 
     def __init__(self, **kwargs):
         if not self.SIZE:
@@ -47,16 +54,34 @@ class BinContainer:
         for k, v in kwargs.items():
             setattr(self, k, v)
 
+    def __getstate__(self):
+        return self.as_dict()
+
+    def __setstate__(self, d):
+        for k, v in d.items():
+            setattr(self, k, v)
+
+    def __iter__(self):
+        return self.as_dict().items()
+
+    def items(self):
+        return self.as_dict().items()
+
     def as_dict(self):
-        # dc = OrderedDict
-        dc = dict
-        d = dc([(k, getattr(self, k)) for k in self._binvars])
+        if not self.include_defaults:
+            f = lambda k, v: v.default != getattr(self, k)
+        else:
+            f = lambda k, v: True
+        d = {k: getattr(self, k) for k, v in self._binvars.items()
+             if f(k, v)}
+        d.update({k: getattr(self, k) for k in self.__dict__
+                  if not k.startswith('_')})
+        # log.debug(f"keys on {self}: {self.__dict__.keys()}")
         return d
 
-
-    # def __getitem__(self, key):
-    #     if hasattr(self, '_binvars') and key in self._binvars:
-    #         return getattr(self, key)
+    @classmethod
+    def from_dict(cls):
+        raise NotImplemented()
 
     @property
     def data(self):
@@ -85,8 +110,12 @@ class BinContainer:
         return f"{self.__class__.__name__}({bytes(self._data)})"
 
 class basevar:
-    def __init__(self, offset):
+    def __init__(self, offset, /, default=None):
         self._offset = offset
+        self.default = default
+        self._name = None
+        self._owner_name = None
+        self._fullname = "??"
 
     def __set_name__(self, owner, name):
         if not hasattr(owner, '_binvars'):
@@ -98,7 +127,6 @@ class basevar:
         self._name = name
         self._fullname = f"{self._owner_name}.{self._name}"
         owner._binvars[self._name] = self
-        # print(f"__set_name__({self}, {owner}, {name})")
 
     def __delete__(self, instance):
         raise AttributeError(f"{self._fullname} is undeletable")
@@ -107,11 +135,8 @@ class basevar:
         return (f"<{self._fullname}@0x{self._offset:x}>")
 
 class structvar(basevar):
-    def __init__(self, offset, fmt):
-        self._name = None
-        self._owner_name = None
-        self._fullname = None
-        self._offset = offset
+    def __init__(self, offset, fmt, *, default=None):
+        super().__init__(offset, default=default)
         self._struct = struct.Struct(fmt)
         self._size = self._struct.size
         self._end = self._offset + self._size
@@ -129,8 +154,8 @@ class structvar(basevar):
         instance.data[self._offset : self._end] = b
 
 class structlist(basevar):
-    def __init__(self, offset, fmt, count, *, filter=None, fill_byte=0xff, sort=True):
-        self._offset = offset
+    def __init__(self, offset, fmt, count, *, filter=None, fill_byte=0xff, sort=True, default=None):
+        super().__init__(offset, default=default)
         self._struct = struct.Struct(fmt)
         self._size = self._struct.size
         self._count = count
@@ -173,8 +198,8 @@ class structlist(basevar):
 
 
 class strvar(basevar):
-    def __init__(self, offset, size):
-        self._offset = offset
+    def __init__(self, offset, size, default=None):
+        super().__init__(offset, default=default)
         self._size = size
 
     def __get__(self, instance, owner=None):
@@ -201,8 +226,8 @@ class strvar(basevar):
             chunk.extend(bytearray(repeat(0xff, pad)))
 
 class bcdvar(basevar):
-    def __init__(self, offset, size, *, big_endian=False, mult=1):
-        self._offset = offset
+    def __init__(self, offset, size, *, big_endian=False, mult=1, default=None):
+        super().__init__(offset, default=default)
         self._size = size
         self._big_endian = big_endian
         self._mult = mult

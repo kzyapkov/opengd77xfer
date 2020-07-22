@@ -24,7 +24,7 @@ import logging
 
 import serial
 
-from .codeplug import Codeplug
+from .codeplug import Codeplug, MemType
 
 MAX_TRANSFER_SIZE = 32
 FLASH_BLOCK_SIZE = 4096

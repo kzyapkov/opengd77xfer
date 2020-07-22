@@ -23,10 +23,10 @@ from collections import namedtuple
 from dataclasses import dataclass
 from enum import IntEnum
 from itertools import repeat
-from typing import List
+from typing import List, Iterator
 from functools import cached_property
-
-from .binvar import *
+from ruamel.yaml import yaml_object
+from opengd77.binvar import *
 
 
 log = logging.getLogger(__name__)
@@ -51,26 +51,32 @@ class MemType(IntEnum):
     WAV_BUFFER = 7
     COMPRESSED_AMBE_BUFFER = 8
 
+
 class IndexedBinContainer(BinContainer):
     def __init__(self, **kw):
         if 'index' not in kw:
             kw['index'] = -1
         super().__init__(**kw)
 
+    @classmethod
+    def to_yaml(cls, representer, node):
+        return representer.represent_dict(node)
+
 
 class Contact(IndexedBinContainer):
     SIZE = 24
     name = strvar(0, 16)
     id = bcdvar(16, 4, big_endian=True)
-    ctype = structvar(20, "B")
-    rx_tone = structvar(21, "B")
-    ring_style = structvar(22, "B")
+    ctype = structvar(20, "B", default=0)
+    rx_tone = structvar(21, "B", default=0)
+    ring_style = structvar(22, "B", default=0)
     used = structvar(23, "B")
 
     @classmethod
     def from_buffer(cls, buf):
         contact = super().from_buffer(buf)
         if contact.used > 2 or len(contact.name) == 0:
+            log.debug(f"invalid contact: {contact} from 0x{buf.hex()}")
             contact.used = 0xff
             return None
         return contact
@@ -78,41 +84,41 @@ class Contact(IndexedBinContainer):
 class TGList(IndexedBinContainer):
     SIZE = 80
     name = strvar(0, 16)
-    contact_numbers = structlist(16, "<H", 16, filter=lambda x: x > 0)
+    contact_nums = structlist(16, "<H", 16, filter=lambda x: x > 0)
 
 class Channel(IndexedBinContainer):
     SIZE = 56
     name = strvar(0, 16)
     rx_freq = bcdvar(16, 4, mult=10)
     tx_freq = bcdvar(20, 4, mult=10)
-    mode = structvar(24, "B")
-    rx_ref_freq = structvar(25, "B")
-    tx_ref_freq = structvar(26, "B")
-    tot = structvar(27, "B")
-    tot_rekey = structvar(28, "B")
-    admit = structvar(29, "B")
-    rssi_threshold = structvar(30, "B")
-    scanlist_index = structvar(31, "B")
-    rx_tone = bcdvar(32, 2)
-    tx_tone = bcdvar(34, 2)
-    voice_emphasis = structvar(36, "B")
-    tx_sig = structvar(37, "B")
-    unmute_rule = structvar(38, "B")
-    rx_sig = structvar(39, "B")
-    arts_interval = structvar(40, "B")
-    encrypt = structvar(41, "B")
-    rx_color = structvar(42, "B")
-    rx_grouplist = structvar(43, "B")
-    tx_color = structvar(44, "B")
-    emergency_system = structvar(45, "B")
-    contact_num = structvar(46, "<H")
-    flag1 = structvar(48, "B")
-    flag2 = structvar(49, "B")
-    flag3 = structvar(50, "B")
+    mode = structvar(24, "B", default=0)
+    rx_ref_freq = structvar(25, "B", default=0)         # ignored
+    tx_ref_freq = structvar(26, "B", default=0)         # ignored
+    tot = structvar(27, "B", default=0)
+    tot_rekey = structvar(28, "B", default=5)           # ignored
+    admit = structvar(29, "B", default=0)               # ignored
+    rssi_threshold = structvar(30, "B", default=80)     # ignored
+    scanlist_index = structvar(31, "B", default=0)      # ignored
+    rx_tone = bcdvar(32, 2, default=16665)
+    tx_tone = bcdvar(34, 2, default=16665)
+    voice_emphasis = structvar(36, "B", default=0)      # ignored
+    tx_sig = structvar(37, "B", default=0)              # ignored
+    unmute_rule = structvar(38, "B", default=0)         # ignored
+    rx_sig = structvar(39, "B", default=0)              # ignored
+    arts_interval = structvar(40, "B", default=22)      # ignored
+    encrypt = structvar(41, "B", default=0)             # ignored
+    rx_color = structvar(42, "B", default=0)
+    rx_grouplist = structvar(43, "B", default=0)
+    tx_color = structvar(44, "B", default=0)
+    emergency_system = structvar(45, "B", default=0)
+    contact_num = structvar(46, "<H", default=0)
+    flag1 = structvar(48, "B", default=0x00)
+    flag2 = structvar(49, "B", default=0x00)
+    flag3 = structvar(50, "B", default=0x00)
     flag4 = structvar(51, "B")
-    vfo_offset = structvar(52, "<H")
-    vfo_flag = structvar(54, "B")
-    sql = structvar(55, "B")
+    vfo_offset = structvar(52, "<H", default=0)
+    vfo_flag = structvar(54, "B", default=0)
+    sql = structvar(55, "B", default=2)
 
     @classmethod
     def from_buffer(cls, buf):
@@ -126,6 +132,10 @@ class Zone(IndexedBinContainer):
     SIZE = 16 + 2 * 80
     name = strvar(0, 16)
     channel_nums = structlist(16, "<H", 80, filter=lambda x: x != 0)
+
+    @property
+    def number(self):
+        return self.index + 1
 
     @classmethod
     def from_buffer(cls, buf):
@@ -208,13 +218,19 @@ class BlockView:
     def __setitem__(self, key, value):
         key = self._normalize_key(key)
         log.warning(f"{self}.__setitem__({key}, {value})")
+        raise NotImplemented()
 
     def __delitem__(self, key):
         key = self._normalize_key(key)
         log.warning(f"{self}.__delitem__({key})")
+        raise NotImplemented()
 
     def __len__(self):
         return sum((b.item_count for b in self.chunk_blocks))
+
+    @classmethod
+    def to_yaml(cls, representer, node):
+        return representer.represent_list(node)
 
     def __iter__(self):
         for cb in self.chunk_blocks:
@@ -226,13 +242,17 @@ class BlockView:
 
 class ZonesView(BlockView):
 
-    SIZE = 32 * 8 # number of zones supported
+    SIZE = 68
+
+    def __init__(self, buf, cls, bounds, block: ChunkedBlock):
+        super().__init__(buf, cls, block)
+        self._bounds = bounds
 
     @cached_property
     def zblock(self):
         return self.chunk_blocks[0]
 
-    @cached_property
+    @property
     def zbytes(self):
         zb = self.zblock
         return self.buf[zb.raw_offset : zb.raw_offset + 32]
@@ -244,22 +264,30 @@ class ZonesView(BlockView):
             return 80
         return 16
 
+    @property
+    def zone_size(self):
+        return 16 + 2 * self.ch_per_zone
+
     def _find_addr_by_index(self, key: int):
-        # return zb.offset + idx * (16 + (2 * self.ch_per_zone))
         zb = self.zblock
         if key >= self.SIZE:
             return None
-        bits = 0
-        for byte_i in range(self.SIZE):
+        bits = -1
+        for byte_i in range(32):
             for bit_i in range(8):
-                if self.zbytes[byte_i] & (1 << bit_i):
-                    bits += 1
-                    if bits == key + 1:
-                        idx = (byte_i * 8 + bit_i)
-                        addr = zb.offset + idx * zb.item_size
-                        log.debug(f"Found zone {key} at 0x{addr:06x} (slot {idx})")
-                        return addr
+                if self.zbytes[byte_i] & (1 << bit_i) == 0:
+                    continue
+                bits += 1
+                if bits == key:
+                    idx = (byte_i * 8 + bit_i)
+                    addr = zb.offset + idx * self.zone_size
+                    if addr + zb.item_size > self._bounds[1]:
+                        log.warning(f"zone id {idx} out of bounds (@0x{addr})")
+                        return None
+                    log.debug(f"Found zone {key} at 0x{addr:06x} (slot {idx})")
+                    return addr
         else:
+            log.warning(f"zone idx{idx} broke out of loop?")
             return None
 
     def __getitem__(self, key):
@@ -278,17 +306,29 @@ class ZonesView(BlockView):
         return z
 
     def __len__(self):
-        return sum(bin(x).count('1') for x in self.zbytes)
+        bitstr = ''.join((f"{x:08b}" for x in self.zbytes))
+        bitstr = bitstr[:self.SIZE]
+        return bitstr.count('1')
+
+        # bitcount = sum(bin(x)[:self.SIZE].count('1') for x in self.zbytes)
+        # return min(bitcount, self.SIZE)
+
+        # for i in range(self.SIZE):
+        #     if self._find_addr_by_index(i) is not None:
+        #         continue
+        #     return i
+
 
     def filter(self, cb, key, chunk):
         return False
 
     def __iter__(self):
         for i in range(len(self)):
-            item = self[i]
-            if item is None:
-                continue
-            yield item
+            try:
+                yield self[i]
+            except KeyError as e:
+                return
+
 
 class Codeplug:
     """
@@ -302,12 +342,11 @@ class Codeplug:
         const int CODEPLUG_ADDR_USER_DMRID = 0x00E8;
         const int CODEPLUG_ADDR_USER_CALLSIGN = 0x00E0; // same as radio name
 
-
-
     """
 
     SIZE = 0x20000
 
+    # blocks describe semantics of the binary blob
     blocks = {
         'scan_lists': ChunkedBlock(0x1790, 64, 88, 64),
         'zones': ChunkedBlock(0x8010, 32, 16+(2*80), 32*8), # special case
@@ -335,6 +374,7 @@ class Codeplug:
         # ChunkedBlock(0x15a10, 16, 56, 128, 128*7),
     ]
 
+    # CPPart describes a chunk of memory we read or write
     CPPart = namedtuple('CPPart',
                         ['memtype', 'file_addr', 'radio_addr', 'size'])
     parts = (
@@ -355,16 +395,18 @@ class Codeplug:
     eeprom = CPPart(MemType.EEPROM, 0, 0, 0x10000)
 
     @classmethod
-    def from_file(cls, filename):
-        with open(filename, 'rb') as f:
-            return cls(f.read())
+    def from_file(cls, f):
+        return cls(f.read())
 
     def __init__(self, buffer=None):
         if buffer:
             if len(buffer) != self.SIZE:
-                raise Exception() # TODO
+                raise ValueError("codeplug is exactly {self.SIZE} bytes long")
+            if any((x>0xff for x in buffer)):
+                raise ValueError("bad data in codeplug buffer")
             self.data = bytearray(buffer)
         else:
+            # XXX: bootstrap empty codeplug with a default one?
             self.data = bytearray(repeat(0xff, self.SIZE))
 
     @cached_property
@@ -384,6 +426,24 @@ class Codeplug:
         return BlockView(self.data, TGList, self.blocks['tglist'],
                          filter=ftg)
 
+    def as_dict(self):
+        # return {
+        #     'zones': [z.as_dict() for z in self.zones],
+        #     'contacts': [z.as_dict() for z in self.contacts],
+        #     'channels': [z.as_dict() for z in self.channels],
+        #     'talk_groups': [z.as_dict() for z in self.talk_groups],
+        # }
+        return {
+            'user': {
+                'dmr_id': self.dmr_id,
+                'callsign': self.callsign
+            },
+            'zones': list(self.zones),
+            'contacts': list(self.contacts),
+            'channels': list(self.channels),
+            'talk_groups': list(self.talk_groups),
+        }
+
     @property
     def channels(self):
         def chf(chb, key, chunk):
@@ -391,14 +451,15 @@ class Codeplug:
             i = key - chb.index_offset
             if (table[i // 8] >> (i % 8)) & 0x01 == 0x00:
                 return False
-            log.debug(f"chf -> True for key={key} index={i} chb={chb}")
+            # log.debug(f"chf -> True for key={key} index={i} chb={chb}")
             return True
         return BlockView(self.data, Channel, *self.channel_blocks,
                          filter=chf)
 
     @property
-    def zones(self):
-        return ZonesView(self.data, Zone, self.blocks['zones'])
+    def zones(self) -> Iterator[Zone]:
+        # return []
+        return ZonesView(self.data, Zone, (0x7500, 0xb000), self.blocks['zones'])
 
 
     @classmethod
@@ -453,6 +514,23 @@ class Codeplug:
         else:
             return addr
 
+    @property
+    def dmr_id(self):
+        b = self.data[0x00E8 : 0x00E8 + 4]
+        return bcd2int(b, big_endian=True)
+
+    @dmr_id.setter
+    def dmr_id(self, value):
+        raise NotImplemented()
+
+    @property
+    def callsign(self):
+        b = self.data[0x00E0 : 0x00E0 + 8]
+        return bytes(b).rstrip(b'\xff').rstrip(b'\0').decode('ascii')
+
+    @callsign.setter
+    def callsign(self):
+        raise NotImplemented()
 
     def __bytes__(self):
         return bytes(self.data)
@@ -463,3 +541,10 @@ class Codeplug:
     def __len__(self):
         if not self.data: return 0
         return len(self.data)
+
+
+def register_yaml(yaml):
+    yaml.register_class(Contact)
+    yaml.register_class(TGList)
+    yaml.register_class(Channel)
+    yaml.register_class(Zone)

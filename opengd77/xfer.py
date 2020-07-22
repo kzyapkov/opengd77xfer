@@ -32,12 +32,12 @@ from datetime import datetime
 import serial
 from ruamel.yaml import YAML
 
-from .codeplug import Channel, Codeplug, Contact, MemType, TGList, Zone
-from .comm import OpenGD77Radio
+from opengd77.codeplug import Codeplug, MemType, register_yaml
+from opengd77.comm import OpenGD77Radio
 
 
 log = logging.getLogger(__name__)
-yaml = YAML()
+
 
 def get_parsers():
     p = argparse.ArgumentParser()
@@ -58,39 +58,70 @@ def get_parsers():
 
     p_read_codeplug = sp.add_parser('read', help="Read codeplug from radio")
     p_read_codeplug.add_argument(
-            'file', help="Where to store codeplug from radio",
+            'file', type=argparse.FileType('wb'),
+            help="Where to store codeplug from radio",
             default="codeplug.g77")
     p_read_codeplug.add_argument('--format', help="Output format",
-            choices=('bin', 'yaml'), default='yaml')
+            choices=('bin', 'yaml'), default='bin')
 
     p_write_codeplug = sp.add_parser('write', help="Write codeplug to radio")
     p_write_codeplug.add_argument(
-            'file', help="Codeplug file to load into radio",
+            'file', type=argparse.FileType('rb'),
+            help="Codeplug file to load into radio",
             default="codeplug.g77")
 
+    p_export = sp.add_parser('export', help="Export YAML codeplug from binary or radio")
+    p_export.add_argument('input_file', help="Binary codeplug file", nargs='?',
+                          type=argparse.FileType('rb'))
+    p_export.add_argument('output_file', help="YAML output file",
+                          type=argparse.FileType('wb'))
+
+    p_import = sp.add_parser('import', help="Import YAML into radio or overlay over binary")
+    p_import.add_argument('output_file', help="Binary codeplug",
+                          type=argparse.FileType('wb'))
+    p_import.add_argument('input_file', help="YAML file to apply",
+                          type=argparse.FileType('rb'))
+
     p_backup_calib = sp.add_parser('backup_calib', help="Backup calibration data")
-    p_backup_calib.add_argument('file', help="Where to store calibration data")
+    p_backup_calib.add_argument('file', help="Where to store calibration data",
+                                type=argparse.FileType('wb'))
 
     p_restore_calib = sp.add_parser('restore_calib', help="Restore calibration data")
-    p_restore_calib.add_argument('file', help="Where to get calibration from")
+    p_restore_calib.add_argument('file', help="Where to get calibration from",
+                                 type=argparse.FileType('rb'))
 
     p_backup_eeprom = sp.add_parser('backup_eeprom', help="Backup calibration data")
-    p_backup_eeprom.add_argument('file', help="Where to store EEPROM data")
+    p_backup_eeprom.add_argument('file', help="Where to store EEPROM data",
+                                 type=argparse.FileType('wb'))
 
     p_restore_eeprom = sp.add_parser('restore_eeprom', help="Restore calibration data")
-    p_restore_eeprom.add_argument('file', help="Where to get EEPROM from")
-
-    p_dump_yaml = sp.add_parser('dump_yaml', help="Dump codeplug into a yml file")
-    p_dump_yaml.add_argument('file', help="Where to store yml codeplug")
+    p_restore_eeprom.add_argument('file', help="Where to get EEPROM from",
+                                  type=argparse.FileType('rb'))
 
     p_dump_codeplug = sp.add_parser('dump', help="Debug helper!")
-    p_dump_codeplug.add_argument('file', help="File to read from", nargs="?")
+    p_dump_codeplug.add_argument('file', help="File to read from", nargs="?",
+                                 type=argparse.FileType('rb'))
 
     return p, sp
 
 
-def main():
+def read_from_radio(port: str) -> Codeplug:
+    radio = OpenGD77Radio(port)
+    cp = radio.read_codeplug()
+    log.info(f"Read {len(cp.data)} bytes")
+    return cp
 
+def write_yaml(cp: Codeplug, f) -> None:
+    yaml = YAML()
+    yaml.default_flow_style = None
+    yaml.indent(None, 4, 2)
+    register_yaml(yaml)
+    dd = cp.as_dict()
+    yaml.dump(dd, f)
+    # log.info(f"Wrote YAML codeplug to {fname}")
+
+
+def main():
     parser, subparsers = get_parsers()
     args = parser.parse_args()
 
@@ -103,28 +134,39 @@ def main():
         sys.exit(1)
 
     if args.cmd == 'read': # from radio into file
-        log.warning(args)
-        if not args.file.endswith('.g77'):
-            args.file = f"{args.file}.g77"
-        log.info(f"Reading codeplug from {args.port} into {args.file}")
-        radio = OpenGD77Radio(args.port)
-        cp = radio.read_codeplug()
-        log.info(f"Read {len(cp.data)} bytes")
-
+        cp = read_from_radio(args.port)
         if args.format == 'bin':
-            with open(args.file, 'wb') as f:
-                f.write(cp.data)
-        elif args.format == 'yaml':
-            print(yaml.dump([z.as_dict() for z in cp.zones]))
-            print(yaml.dump([z.as_dict() for z in cp.contacts]))
-            print(yaml.dump([z.as_dict() for z in cp.channels]))
-            print(yaml.dump([z.as_dict() for z in cp.talk_groups]))
+            args.file.write(cp.data)
+        else:
+            write_yaml(cp, args.file)
+
+        log.info(f"Read codeplug from {args.port} into {args.file}")
 
     elif args.cmd == 'write':
         log.info(f"Writing codeplug from {args.file} into {args.port}")
         cp = Codeplug.from_file(args.file)
         radio = OpenGD77Radio(args.port)
         radio.write_codeplug(cp)
+        log.info(f"Wrote {args.file} into {args.port}")
+
+    elif args.cmd == 'export':
+        log.warning(f"export {args}")
+        if args.input_file:
+            src = args.input_file
+            cp = Codeplug.from_file(args.input_file)
+        else:
+            src = args.port
+            cp = read_from_radio(args.port)
+
+        write_yaml(cp, args.output_file)
+        log.info(f"Exported data from {src} into {args.output_file}")
+
+    elif args.cmd == 'import':
+        cp = Codeplug.from_file(args.output_file)
+        with open(args.input_file, 'rb') as f:
+            yaml = YAML()
+            yml = yaml.load(f.read())
+        log.info(yml)
 
     elif args.cmd == 'backup_calib':
         if not args.file.endswith('.g77calib'):
@@ -144,11 +186,14 @@ def main():
         with open(args.file, 'wb') as f:
             f.write(data)
 
+    # elif args.cmd == 'restore_calib':
+    # elif args.cmd == 'restore_eeprom':
+
     elif args.cmd == 'dump':
 
         Codeplug.dump_parts()
 
-        if args.file and os.path.exists(args.file):
+        if args.file:
             log.info(f"Loading codeplug from {args.file}")
             cp = Codeplug.from_file(args.file)
         else:
@@ -161,34 +206,27 @@ def main():
         def dump_seq(seq, name):
             log.info(f"*** {name} ***")
             for i in seq:
-                log.info(f"{i.index}\t{i}")
+                if i: log.info(f"{i.index}\t{i}")
+                else: log.info(f"empty")
 
         dump_seq(cp.contacts, "Contacts")
         dump_seq(cp.talk_groups, "Talk Groups")
         dump_seq(cp.channels, "Channels")
-        dump_seq(cp.zones, f"Zones: {len(cp.zones)}")
 
-        log.debug(f"zone bits: 0x{cp.zones.zbytes.hex()}")
-        log.debug(f"ch_per_zone: {cp.zones.ch_per_zone}")
+        log.info(f"zone bits: 0x{cp.zones.zbytes.hex()}")
+        log.info(f"ch_per_zone: {cp.zones.ch_per_zone}")
         log.debug("zone locations:")
         for i in range(len(cp.zones)):
             addr = cp.zones._find_addr_by_index(i)
+            if not addr:
+                log.warning(f"{i} not found?!")
+                break
             log.debug(f"{i: 6d} 0x{addr:06x}")
 
-    elif args.cmd == 'dump_yaml':
+        dump_seq(cp.zones, f"Zones: {len(cp.zones)}")
 
-        cp = Codeplug.from_file(args.file)
-
-        yaml.default_flow_style = None
-        yaml.dump({
-            'zones': [z.as_dict() for z in cp.zones],
-            'contacts': [z.as_dict() for z in cp.contacts],
-            'channels': [z.as_dict() for z in cp.channels],
-            'talk_groups': [z.as_dict() for z in cp.talk_groups],
-        }, sys.stdout)
-
-    else:
-        log.warning(f"not implemented: {args.cmd}")
+        log.info(f"DMR ID: {cp.dmr_id}")
+        log.info(f"  CALL: {cp.callsign}")
 
 
 if __name__ == '__main__':

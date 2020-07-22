@@ -13,10 +13,8 @@ Still very raw, key features missing.
 
  Notes to self, what needs to be done:
 
-  * add radio id, callsign, other settings (?) in codeplug
+  * add settings in codeplug (?)
   * implement "import", i.e. modifying a binary from yaml
-  * implement packing of zones (other lists?)
-  * add csv import/export
 
 ## Installation
 
