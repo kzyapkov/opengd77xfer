@@ -90,11 +90,11 @@ def get_parsers():
     p_restore_calib.add_argument('file', help="Where to get calibration from",
                                  type=argparse.FileType('rb'))
 
-    p_backup_eeprom = sp.add_parser('backup_eeprom', help="Backup calibration data")
+    p_backup_eeprom = sp.add_parser('backup_eeprom', help="Backup EEPROM data")
     p_backup_eeprom.add_argument('file', help="Where to store EEPROM data",
                                  type=argparse.FileType('wb'))
 
-    p_restore_eeprom = sp.add_parser('restore_eeprom', help="Restore calibration data")
+    p_restore_eeprom = sp.add_parser('restore_eeprom', help="Restore EEPROM data")
     p_restore_eeprom.add_argument('file', help="Where to get EEPROM from",
                                   type=argparse.FileType('rb'))
 
