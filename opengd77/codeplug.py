@@ -53,14 +53,19 @@ class MemType(IntEnum):
 
 
 class IndexedBinContainer(BinContainer):
-    def __init__(self, **kw):
+    def __init__(self, data=None, **kw):
         if 'index' not in kw:
-            kw['index'] = -1
-        super().__init__(**kw)
+            kw['index'] = None
+        super().__init__(data, **kw)
 
     @classmethod
     def to_yaml(cls, representer, node):
         return representer.represent_dict(node)
+
+    @property
+    def valid(self):
+        return True
+
 
 
 class Contact(IndexedBinContainer):
@@ -70,28 +75,34 @@ class Contact(IndexedBinContainer):
     ctype = structvar(20, "B", default=0)
     rx_tone = structvar(21, "B", default=0)
     ring_style = structvar(22, "B", default=0)
-    used = structvar(23, "B")
+    ts_override = structvar(23, "B")
 
     @classmethod
     def from_buffer(cls, buf):
         contact = super().from_buffer(buf)
-        if contact.used > 2 or len(contact.name) == 0:
-            log.debug(f"invalid contact: {contact} from 0x{buf.hex()}")
-            contact.used = 0xff
-            return None
         return contact
+
+    @property
+    def valid(self):
+        return len(self.name) > 0
+
 
 class TGList(IndexedBinContainer):
     SIZE = 80
     name = strvar(0, 16)
-    contact_nums = structlist(16, "<H", 16, filter=lambda x: x > 0)
+    contact_nums = structlist(16, "<H", 16, filter_=lambda x: x > 0 and x < 2000)
+
+    @property
+    def valid(self):
+        return len(self.contact_nums) > 0
+
 
 class Channel(IndexedBinContainer):
     SIZE = 56
     name = strvar(0, 16)
     rx_freq = bcdvar(16, 4, mult=10)
     tx_freq = bcdvar(20, 4, mult=10)
-    mode = structvar(24, "B", default=0)
+    mode = structvar(24, "B", default=0)                # none, analog, digital
     rx_ref_freq = structvar(25, "B", default=0)         # ignored
     tx_ref_freq = structvar(26, "B", default=0)         # ignored
     tot = structvar(27, "B", default=0)
@@ -122,27 +133,21 @@ class Channel(IndexedBinContainer):
 
     @classmethod
     def from_buffer(cls, buf):
-        name = bytes(buf[:16]).strip(b'\0').strip(b'\xff')
-        if not len(name):
-            return None
         return super().from_buffer(buf)
+
+    @property
+    def valid(self):
+        return len(self.name) > 0
 
 
 class Zone(IndexedBinContainer):
     SIZE = 16 + 2 * 80
     name = strvar(0, 16)
-    channel_nums = structlist(16, "<H", 80, filter=lambda x: x != 0)
+    channel_nums = structlist(16, "<H", 80, filter_=lambda x: x != 0 and x < 2000)
 
     @property
-    def number(self):
-        return self.index + 1
-
-    @classmethod
-    def from_buffer(cls, buf):
-        name = bytes(buf[:16]).strip(b'\0').strip(b'\xff')
-        if not len(name):
-            return None
-        return super().from_buffer(buf)
+    def valid(self):
+        return len(self.channel_nums) > 0
 
 
 @dataclass(frozen=True)
@@ -157,13 +162,16 @@ class ChunkedBlock:
 
     @property
     def offset(self):
+        "where the chunked data starts"
         return self.raw_offset + self.preamble
 
     @property
     def size(self):
+        "length of underlying buffer in bytes"
         return self.item_count * self.item_size + self.preamble
 
     def chunk(self, buf, idx):
+        "get the chunk of bytes at idx"
         assert idx < self.item_count
         assert len(buf) >= self.raw_offset + self.size
         addr = self.offset + idx * self.item_size
@@ -171,23 +179,23 @@ class ChunkedBlock:
         return buf[addr : addr+self.item_size]
 
     def walk(self, buf):
+        "iterate over chunks of bytes in this buf"
         for i in range(self.item_count):
             yield self.chunk(buf, i)
 
 
 class BlockView:
-    def __init__(self, buf, cls, /, *chunk_blocks: List[ChunkedBlock],
-                 filter=None):
+    """Look at a block of memory and see objects and properties
+
+    This uses a `ChunkedBlock` to slice the underlying memory buffer
+    and wrap each chunk in `cls`. Uses a `memoryview` of `buf`.
+    """
+    def __init__(self, buf, cls, /, *chunk_blocks: List[ChunkedBlock]):
         if not isinstance(buf, memoryview):
             buf = memoryview(buf)
         self.buf = buf
         self.cls = cls
         self.chunk_blocks = chunk_blocks
-        if callable(filter):
-            self.filter = filter
-
-    def filter(self, chb, key, chunk):
-        return True
 
     def _normalize_key(self, key):
         if not isinstance(key, int):
@@ -199,7 +207,8 @@ class BlockView:
     def __getitem__(self, key):
         key = self._normalize_key(key)
         for cbi in self.chunk_blocks:
-            if key >= cbi.index_offset and key < cbi.index_offset + cbi.item_count:
+            if (key >= cbi.index_offset and
+                        key < cbi.index_offset + cbi.item_count):
                 cb = cbi
                 break
         else:
@@ -207,13 +216,10 @@ class BlockView:
 
         i = key - cb.index_offset
         chunk = cb.chunk(self.buf, i)
-        if not self.filter(cb, key, chunk):
-            return None
 
         obj = self.cls.from_buffer(chunk)
-        if obj is not None:
-            obj.index = key + cb.index_offset
-            return obj
+        obj.index = key + cb.index_offset
+        return obj
 
     def __setitem__(self, key, value):
         key = self._normalize_key(key)
@@ -226,11 +232,14 @@ class BlockView:
         raise NotImplemented()
 
     def __len__(self):
+        "number of contained objects"
         return sum((b.item_count for b in self.chunk_blocks))
 
     @classmethod
     def to_yaml(cls, representer, node):
         return representer.represent_list(node)
+
+
 
     def __iter__(self):
         for cb in self.chunk_blocks:
@@ -268,27 +277,32 @@ class ZonesView(BlockView):
     def zone_size(self):
         return 16 + 2 * self.ch_per_zone
 
-    def _find_addr_by_index(self, key: int):
-        zb = self.zblock
-        if key >= self.SIZE:
+    def _find_addr_by_index(self, idx: int):
+        if idx > self.SIZE:
             return None
-        bits = -1
-        for byte_i in range(32):
-            for bit_i in range(8):
-                if self.zbytes[byte_i] & (1 << bit_i) == 0:
-                    continue
-                bits += 1
-                if bits == key:
-                    idx = (byte_i * 8 + bit_i)
-                    addr = zb.offset + idx * self.zone_size
-                    if addr + zb.item_size > self._bounds[1]:
-                        log.warning(f"zone id {idx} out of bounds (@0x{addr})")
-                        return None
-                    log.debug(f"Found zone {key} at 0x{addr:06x} (slot {idx})")
-                    return addr
-        else:
-            log.warning(f"zone idx{idx} broke out of loop?")
-            return None
+        return self.zblock.offset + idx * self.zone_size
+
+        # XXX: this may come in handy later
+        # zb = self.zblock
+        # if key >= self.SIZE:
+        #     return None
+        # bits = -1
+        # for byte_i in range(32):
+        #     for bit_i in range(8):
+        #         if self.zbytes[byte_i] & (1 << bit_i) == 0:
+        #             continue
+        #         bits += 1
+        #         if bits == key:
+        #             idx = (byte_i * 8 + bit_i)
+        #             addr = zb.offset + idx * self.zone_size
+        #             if addr + zb.item_size > self._bounds[1]:
+        #                 log.warning(f"zone id {idx} out of bounds (@0x{addr})")
+        #                 return None
+        #             log.debug(f"Found zone {key} at 0x{addr:06x} (slot {idx})")
+        #             return addr
+        # else:
+        #     log.warning(f"zone idx{idx} broke out of loop?")
+        #     return None
 
     def __getitem__(self, key):
         if key >= len(self):
@@ -298,51 +312,25 @@ class ZonesView(BlockView):
             raise KeyError(f"{key} out of range")
 
         chunk = self.buf[addr : addr + 16 + (2 * self.ch_per_zone)]
-        z = Zone.from_buffer(chunk)
-        if not z:
-            log.warning(f"Failed to create zone from {bytes(chunk)}")
-            return None
+        z = Zone(chunk)
         z.index = key
         return z
 
     def __len__(self):
-        bitstr = ''.join((f"{x:08b}" for x in self.zbytes))
-        bitstr = bitstr[:self.SIZE]
-        return bitstr.count('1')
-
-        # bitcount = sum(bin(x)[:self.SIZE].count('1') for x in self.zbytes)
-        # return min(bitcount, self.SIZE)
-
-        # for i in range(self.SIZE):
-        #     if self._find_addr_by_index(i) is not None:
-        #         continue
-        #     return i
-
+        bitstr = ''.join((f"{x:08b}" for x in self.zbytes)) # bits as 01 string
+        bitstr = bitstr[:self.SIZE] # only look at the first 68 bits
+        l = bitstr.count('1')
+        return l
 
     def filter(self, cb, key, chunk):
         return False
 
     def __iter__(self):
         for i in range(len(self)):
-            try:
-                yield self[i]
-            except KeyError as e:
-                return
+            yield self[i]
 
 
 class Codeplug:
-    """
-    To add:
-        * radio name get/set
-        * dmrid get/set
-        * boot screen data
-        * vfo ch get/set
-        * opengd77 custom data (boot image)
-
-        const int CODEPLUG_ADDR_USER_DMRID = 0x00E8;
-        const int CODEPLUG_ADDR_USER_CALLSIGN = 0x00E0; // same as radio name
-
-    """
 
     SIZE = 0x20000
 
@@ -369,9 +357,9 @@ class Codeplug:
         ChunkedBlock(0x105e0, 16, 56, 128, 128*4),
 
         # these don't seem to be initialized, what is the limit?
-        # ChunkedBlock(0x121f0, 16, 56, 128, 128*5),
-        # ChunkedBlock(0x13e00, 16, 56, 128, 128*6),
-        # ChunkedBlock(0x15a10, 16, 56, 128, 128*7),
+        ChunkedBlock(0x121f0, 16, 56, 128, 128*5),
+        ChunkedBlock(0x13e00, 16, 56, 128, 128*6),
+        ChunkedBlock(0x15a10, 16, 56, 128, 128*7),
     ]
 
     # CPPart describes a chunk of memory we read or write
@@ -423,38 +411,11 @@ class Codeplug:
                 return False
             return True
 
-        return BlockView(self.data, TGList, self.blocks['tglist'],
-                         filter=ftg)
-
-    def as_dict(self):
-        # return {
-        #     'zones': [z.as_dict() for z in self.zones],
-        #     'contacts': [z.as_dict() for z in self.contacts],
-        #     'channels': [z.as_dict() for z in self.channels],
-        #     'talk_groups': [z.as_dict() for z in self.talk_groups],
-        # }
-        return {
-            'user': {
-                'dmr_id': self.dmr_id,
-                'callsign': self.callsign
-            },
-            'zones': list(self.zones),
-            'contacts': list(self.contacts),
-            'channels': list(self.channels),
-            'talk_groups': list(self.talk_groups),
-        }
+        return BlockView(self.data, TGList, self.blocks['tglist'])
 
     @property
     def channels(self):
-        def chf(chb, key, chunk):
-            table = self.data[chb.raw_offset : chb.offset]
-            i = key - chb.index_offset
-            if (table[i // 8] >> (i % 8)) & 0x01 == 0x00:
-                return False
-            # log.debug(f"chf -> True for key={key} index={i} chb={chb}")
-            return True
-        return BlockView(self.data, Channel, *self.channel_blocks,
-                         filter=chf)
+        return BlockView(self.data, Channel, *self.channel_blocks)
 
     @property
     def zones(self) -> Iterator[Zone]:
@@ -465,7 +426,6 @@ class Codeplug:
     @classmethod
     def dump_parts(cls):
         def block_in_part(block: ChunkedBlock, part: cls.CPPart) -> bool:
-            # start = Codeplug.radio2file(block.raw_offset)
             start = block.raw_offset
             end = start + block.size
             part_end = part.file_addr + part.size
@@ -532,6 +492,26 @@ class Codeplug:
     def callsign(self):
         raise NotImplemented()
 
+    def as_dict(self):
+        return {
+            'user': {
+                'dmr_id': self.dmr_id,
+                'callsign': self.callsign,
+            },
+            'zones': [x for x in self.zones if  x.valid],
+            'contacts': [x for x in self.contacts if  x.valid],
+            'channels': [x for x in self.channels if  x.valid],
+            'talk_groups': [x for x in self.talk_groups if  x.valid],
+        }
+
+    @classmethod
+    def to_yaml(cls, representer, node):
+        return representer.represent_dict(node.as_dict())
+
+    @classmethod
+    def from_yaml(cls, constructor, node):
+        raise NotImplemented()
+
     def __bytes__(self):
         return bytes(self.data)
 
@@ -544,6 +524,7 @@ class Codeplug:
 
 
 def register_yaml(yaml):
+    yaml.register_class(Codeplug)
     yaml.register_class(Contact)
     yaml.register_class(TGList)
     yaml.register_class(Channel)

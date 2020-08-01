@@ -22,11 +22,6 @@ import struct
 from collections import OrderedDict
 from itertools import repeat
 
-# from ruamel.yaml import YAML
-# yaml = YAML()
-# yaml.default_flow_style = None
-# yaml.indent(mapping=4, sequence=4, offset=2)
-
 
 log = logging.getLogger(__name__)
 
@@ -37,13 +32,11 @@ class BinContainer:
 
     include_defaults = False
 
-    def __init__(self, **kwargs):
+    def __init__(self, data=None, **kwargs):
         if not self.SIZE:
             raise ValueError(f"define SIZE in subclasses")
 
-        if '_data' in kwargs:
-            data = kwargs.pop('_data')
-        else:
+        if data is None:
             data = bytearray(repeat(self.FILL, self.SIZE))
 
         if len(data) != self.SIZE:
@@ -52,13 +45,6 @@ class BinContainer:
         self._data = data
 
         for k, v in kwargs.items():
-            setattr(self, k, v)
-
-    def __getstate__(self):
-        return self.as_dict()
-
-    def __setstate__(self, d):
-        for k, v in d.items():
             setattr(self, k, v)
 
     def __iter__(self):
@@ -80,8 +66,8 @@ class BinContainer:
         return d
 
     @classmethod
-    def from_dict(cls):
-        raise NotImplemented()
+    def from_dict(cls, d):
+        return cls(**d)
 
     @property
     def data(self):
@@ -93,23 +79,24 @@ class BinContainer:
     def from_buffer(cls, buf):
         if len(buf) != cls.SIZE:
             raise ValueError(f"need buf of len={cls.SIZE}")
-        return cls(_data=buf)
+        if not isinstance(buf, memoryview):
+            buf = memoryview(buf)
+        return cls(buf)
 
     def __str__(self):
-        if not hasattr(self, '_binvars'):
+        cls = self.__class__
+        if not hasattr(cls, '_binvars'):
             return f"{self.__class__.__name__}(**unknown fields**)"
-        fields = [f"{name}={getattr(self, name)}" for name in self._binvars.keys()]
+
+        fields = [f"{name}={getattr(self, name)}" for name in cls._binvars.keys()]
         fields = ", ".join(fields)
         return f"{self.__class__.__name__}({fields})"
 
-    def fields(self):
-        return [f"{name}={getattr(self, name)}" for name in self._binvars.keys()]
-
     def __repr__(self):
-        # list attributes
         return f"{self.__class__.__name__}({bytes(self._data)})"
 
 class basevar:
+    """Represent a field inside a BinContainer"""
     def __init__(self, offset, /, default=None):
         self._offset = offset
         self.default = default
@@ -121,7 +108,7 @@ class basevar:
         if not hasattr(owner, '_binvars'):
             owner._binvars = OrderedDict()
         if name in owner._binvars:
-            raise AttributeError("two of {name} on {owner}")
+            raise AttributeError(f"two of {name} on {owner}")
 
         self._owner_name = owner.__name__
         self._name = name
@@ -133,6 +120,17 @@ class basevar:
 
     def __str__(self):
         return (f"<{self._fullname}@0x{self._offset:x}>")
+
+
+# class propvar(property, basevar):
+#     def __set_name__(self, owner, name):
+#         if not hasattr(owner, '_binvars'):
+#             owner._binvars = OrderedDict()
+#         if name in owner._binvars:
+#             raise AttributeError(f"two of {name} on {owner}")
+#         owner._binvars[name] = self
+#         super().__set_name__(owner, name)
+
 
 class structvar(basevar):
     def __init__(self, offset, fmt, *, default=None):
@@ -154,13 +152,14 @@ class structvar(basevar):
         instance.data[self._offset : self._end] = b
 
 class structlist(basevar):
-    def __init__(self, offset, fmt, count, *, filter=None, fill_byte=0xff, sort=True, default=None):
+    def __init__(self, offset, fmt, count, *,
+                 filter_=None, fill=0xff, sort=True, default=None):
         super().__init__(offset, default=default)
         self._struct = struct.Struct(fmt)
         self._size = self._struct.size
         self._count = count
-        self._filter = filter
-        self._fill_byte = fill_byte
+        self._filter = filter_
+        self._fill_byte = fill
         self._sort = sort
 
     def _find_start_end(self, i):
@@ -174,12 +173,6 @@ class structlist(basevar):
             return self
 
         d = instance.data
-        # su = self._struct.unpack
-        # l = (su(d[self._offset + self._size * i :
-        #           self._offset + self._size * (i + 1)])[0]
-        #      for i in range(self._count))
-        # if self._filter:
-        #     l = filter(self._filter, l)
         l = []
         for i in range(self._count):
             start, end = self._find_start_end(i)
@@ -193,7 +186,7 @@ class structlist(basevar):
         return l
 
     def __set__(self, instance, value):
-        """setting the whole list? I may need more magic!!!"""
+        """setting the whole list? easy. slice or mutate? not so much so"""
         raise NotImplemented()
 
 

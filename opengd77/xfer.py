@@ -45,14 +45,10 @@ def get_parsers():
     # TODO: use usb to find the correct serial port or list matching
     # ports by VID:PID, like dmrconfig does
     p.add_argument('--port', '-p', help="Serial port of radio",
-                   default=('COM13'
-                        if platform.system() == 'Windows'
-                        else '/dev/ttyACM0'))
+                   default=('COM13' if platform.system() == 'Windows'
+                            else '/dev/ttyACM0'))
 
     p.add_argument('-v', '--verbose', default=False, action='store_true')
-
-    # def add_file_arg(p, default=None, help="")
-    #     p.add_argument('file', help=help, default=default)
 
     sp = p.add_subparsers(dest='cmd')
 
@@ -90,11 +86,11 @@ def get_parsers():
     p_restore_calib.add_argument('file', help="Where to get calibration from",
                                  type=argparse.FileType('rb'))
 
-    p_backup_eeprom = sp.add_parser('backup_eeprom', help="Backup calibration data")
+    p_backup_eeprom = sp.add_parser('backup_eeprom', help="Backup EEPROM data")
     p_backup_eeprom.add_argument('file', help="Where to store EEPROM data",
                                  type=argparse.FileType('wb'))
 
-    p_restore_eeprom = sp.add_parser('restore_eeprom', help="Restore calibration data")
+    p_restore_eeprom = sp.add_parser('restore_eeprom', help="Restore EEPROM data")
     p_restore_eeprom.add_argument('file', help="Where to get EEPROM from",
                                   type=argparse.FileType('rb'))
 
@@ -116,8 +112,12 @@ def write_yaml(cp: Codeplug, f) -> None:
     yaml.default_flow_style = None
     yaml.indent(None, 4, 2)
     register_yaml(yaml)
-    dd = cp.as_dict()
-    yaml.dump(dd, f)
+
+    # dd = cp.as_dict()
+    # yaml.dump(dd, f)
+
+    yaml.dump(cp, f)
+
     # log.info(f"Wrote YAML codeplug to {fname}")
 
 
@@ -163,8 +163,8 @@ def main():
 
     elif args.cmd == 'import':
         cp = Codeplug.from_file(args.output_file)
+        yaml = YAML()
         with open(args.input_file, 'rb') as f:
-            yaml = YAML()
             yml = yaml.load(f.read())
         log.info(yml)
 
