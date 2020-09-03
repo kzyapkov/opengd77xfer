@@ -42,6 +42,9 @@ def bcd2int(buf, *, big_endian=False):
         res += (((b>>4) & 0x0f) * 10 + (b & 0x0f)) * (100 ** i)
     return res
 
+def int2bcd(val, big_endian=False, pad=None):
+    sval = f"{val:u}"
+    raise NotImplemented()
 
 class MemType(IntEnum):
     FLASH = 1
@@ -52,7 +55,7 @@ class MemType(IntEnum):
     COMPRESSED_AMBE_BUFFER = 8
 
 
-class IndexedBinContainer(BinContainer):
+class IndexedBinStruct(BinStruct):
     def __init__(self, data=None, **kw):
         if 'index' not in kw:
             kw['index'] = None
@@ -68,7 +71,7 @@ class IndexedBinContainer(BinContainer):
 
 
 
-class Contact(IndexedBinContainer):
+class Contact(IndexedBinStruct):
     SIZE = 24
     name = strvar(0, 16)
     id = bcdvar(16, 4, big_endian=True)
@@ -87,7 +90,7 @@ class Contact(IndexedBinContainer):
         return len(self.name) > 0
 
 
-class TGList(IndexedBinContainer):
+class TGList(IndexedBinStruct):
     SIZE = 80
     name = strvar(0, 16)
     contact_nums = structlist(16, "<H", 16, filter_=lambda x: x > 0 and x < 2000)
@@ -97,7 +100,7 @@ class TGList(IndexedBinContainer):
         return len(self.contact_nums) > 0
 
 
-class Channel(IndexedBinContainer):
+class Channel(IndexedBinStruct):
     SIZE = 56
     name = strvar(0, 16)
     rx_freq = bcdvar(16, 4, mult=10)
@@ -140,7 +143,7 @@ class Channel(IndexedBinContainer):
         return len(self.name) > 0
 
 
-class Zone(IndexedBinContainer):
+class Zone(IndexedBinStruct):
     SIZE = 16 + 2 * 80
     name = strvar(0, 16)
     channel_nums = structlist(16, "<H", 80, filter_=lambda x: x != 0 and x < 2000)
@@ -150,103 +153,6 @@ class Zone(IndexedBinContainer):
         return len(self.channel_nums) > 0
 
 
-@dataclass(frozen=True)
-class ChunkedBlock:
-    """Helper to describe and iterate over blocks of memory"""
-    raw_offset: int
-    preamble: int
-    item_size: int
-    item_count: int
-
-    index_offset: int = 0
-
-    @property
-    def offset(self):
-        "where the chunked data starts"
-        return self.raw_offset + self.preamble
-
-    @property
-    def size(self):
-        "length of underlying buffer in bytes"
-        return self.item_count * self.item_size + self.preamble
-
-    def chunk(self, buf, idx):
-        "get the chunk of bytes at idx"
-        assert idx < self.item_count
-        assert len(buf) >= self.raw_offset + self.size
-        addr = self.offset + idx * self.item_size
-        # # log.debug(f"walk {i} 0x{addr:08x}-0x{addr+self.item_size:08x} {len(data)}")
-        return buf[addr : addr+self.item_size]
-
-    def walk(self, buf):
-        "iterate over chunks of bytes in this buf"
-        for i in range(self.item_count):
-            yield self.chunk(buf, i)
-
-
-class BlockView:
-    """Look at a block of memory and see objects and properties
-
-    This uses a `ChunkedBlock` to slice the underlying memory buffer
-    and wrap each chunk in `cls`. Uses a `memoryview` of `buf`.
-    """
-    def __init__(self, buf, cls, /, *chunk_blocks: List[ChunkedBlock]):
-        if not isinstance(buf, memoryview):
-            buf = memoryview(buf)
-        self.buf = buf
-        self.cls = cls
-        self.chunk_blocks = chunk_blocks
-
-    def _normalize_key(self, key):
-        if not isinstance(key, int):
-            raise KeyError("only simple indexing is supported")
-        if key < 0:
-            key = len(self) + key
-        return key
-
-    def __getitem__(self, key):
-        key = self._normalize_key(key)
-        for cbi in self.chunk_blocks:
-            if (key >= cbi.index_offset and
-                        key < cbi.index_offset + cbi.item_count):
-                cb = cbi
-                break
-        else:
-            raise KeyError(f"{key} out of range")
-
-        i = key - cb.index_offset
-        chunk = cb.chunk(self.buf, i)
-
-        obj = self.cls.from_buffer(chunk)
-        obj.index = key + cb.index_offset
-        return obj
-
-    def __setitem__(self, key, value):
-        key = self._normalize_key(key)
-        log.warning(f"{self}.__setitem__({key}, {value})")
-        raise NotImplemented()
-
-    def __delitem__(self, key):
-        key = self._normalize_key(key)
-        log.warning(f"{self}.__delitem__({key})")
-        raise NotImplemented()
-
-    def __len__(self):
-        "number of contained objects"
-        return sum((b.item_count for b in self.chunk_blocks))
-
-    @classmethod
-    def to_yaml(cls, representer, node):
-        return representer.represent_list(node)
-
-
-
-    def __iter__(self):
-        for cb in self.chunk_blocks:
-            for i in range(cb.item_count):
-                item = self[i+cb.index_offset]
-                if item is not None:
-                    yield item
 
 
 class ZonesView(BlockView):
@@ -254,8 +160,11 @@ class ZonesView(BlockView):
     SIZE = 68
 
     def __init__(self, buf, cls, bounds, block: ChunkedBlock):
-        super().__init__(buf, cls, block)
-        self._bounds = bounds
+        try:
+            super().__init__(buf, cls, block)
+            self._bounds = bounds
+        except Exception as e:
+            log.exception(f"while creating a zone")
 
     @cached_property
     def zblock(self):
@@ -312,7 +221,12 @@ class ZonesView(BlockView):
             raise KeyError(f"{key} out of range")
 
         chunk = self.buf[addr : addr + 16 + (2 * self.ch_per_zone)]
-        z = Zone(chunk)
+        try:
+            z = Zone(chunk)
+        except Exception as e:
+            log.exception(f"failed creating Zone at 0x{addr:x} chpz {self.ch_per_zone}")
+            raise KeyError(f"{key} internal error")
+
         z.index = key
         return z
 
@@ -321,9 +235,6 @@ class ZonesView(BlockView):
         bitstr = bitstr[:self.SIZE] # only look at the first 68 bits
         l = bitstr.count('1')
         return l
-
-    def filter(self, cb, key, chunk):
-        return False
 
     def __iter__(self):
         for i in range(len(self)):
@@ -489,7 +400,7 @@ class Codeplug:
         return bytes(b).rstrip(b'\xff').rstrip(b'\0').decode('ascii')
 
     @callsign.setter
-    def callsign(self):
+    def callsign(self, value):
         raise NotImplemented()
 
     def as_dict(self):
@@ -498,11 +409,15 @@ class Codeplug:
                 'dmr_id': self.dmr_id,
                 'callsign': self.callsign,
             },
-            'zones': [x for x in self.zones if  x.valid],
-            'contacts': [x for x in self.contacts if  x.valid],
-            'channels': [x for x in self.channels if  x.valid],
-            'talk_groups': [x for x in self.talk_groups if  x.valid],
+            'contacts': self.contacts.as_list(only_valid=True),
+            'channels': self.channels.as_list(only_valid=True),
+            'zones': self.zones.as_list(only_valid=True),
+            'talk_groups': self.talk_groups.as_list(only_valid=True),
         }
+
+    @classmethod
+    def from_dict(cls, d):
+        raise NotImplemented()
 
     @classmethod
     def to_yaml(cls, representer, node):
@@ -516,7 +431,7 @@ class Codeplug:
         return bytes(self.data)
 
     def __str__(self):
-        return str(self.data)
+        return f"<Codeplug {self.dmr_id} '{self.callsign}'>"
 
     def __len__(self):
         if not self.data: return 0
