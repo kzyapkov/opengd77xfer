@@ -13,8 +13,8 @@ Still very raw, key features missing.
 
  Notes to self, what needs to be done:
 
-  * add settings in codeplug (?)
   * implement "import", i.e. modifying a binary from yaml
+  * add settings in codeplug (?)
 
 ## Installation
 
@@ -25,11 +25,25 @@ should work, then
     gd77xfer -h
     gd77xfer <subcommand> -h
 
+
+## Usage
+
+The tool supports reading and writing in the original binary format:
+
+    gd77xfer -p /dev/myradio read my-codeplug.g77
+    gd77xfer -p /dev/myradio write my-codeplug.g77
+
+The intention is to support import/export to yaml, but currently only export
+is implemented
+
+    gd77xfer export my-codeplug.g77 my-codeplug.yml
+
+
 ## Copyright
 
 This code was originally published on
 
-http://www.opengd77.com/viewtopic.php?f=12&t=959&p=8847&hilit=python+linux&sid=6edaf5a7e67d939886e47aaeaa26dadf#p8829
+http://www.opengd77.com/viewtopic.php?f=12&t=959&p=8847
 
 by user oh1fss, licensed under GPLv2.
 
