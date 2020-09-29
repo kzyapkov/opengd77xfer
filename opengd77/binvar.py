@@ -27,6 +27,36 @@ from typing import List
 log = logging.getLogger(__name__)
 
 
+def bcd2int(buf, *, big_endian=False) -> int:
+    if isinstance(buf, int):
+        buf = (buf, )
+    res = 0
+    if big_endian:
+        buf = reversed(buf)
+    for i, b in enumerate(buf):
+        res += (((b>>4) & 0x0f) * 10 + (b & 0x0f)) * (100 ** i)
+    return res
+
+
+def int2bcd(val, *, size=4, big_endian=False) -> bytes:
+    val = f"{val}"
+
+    if len(val) > size * 2:
+        raise ValueError("'{val}' doesn't fit in {size} bytes")
+
+    val = val.zfill(size * 2)
+    chunk = bytearray(repeat(0, size))
+    for i, digit in enumerate(val):
+        bits = int(digit)
+        if i % 2 == 0: bits = bits << 4
+        if big_endian:
+            chunk[i//2] |= bits
+        else:
+            chunk[size - 1 - i//2] |= bits
+
+    return chunk
+
+
 class BinStructMeta(type):
     def __new__(cls, clsname, superclasses, attributedict):
         attributedict['_binvars'] = OrderedDict()
@@ -56,9 +86,6 @@ class BinStruct(metaclass=BinStructMeta):
 
         for k, v in kwargs.items():
             setattr(self, k, v)
-
-    def __iter__(self):
-        return self.as_dict().items()
 
     def items(self):
         return self.as_dict().items()
@@ -110,6 +137,7 @@ class BinStruct(metaclass=BinStructMeta):
 @dataclass(frozen=True)
 class ChunkedBlock:
     """Helper to describe and iterate over blocks of memory"""
+
     raw_offset: int
     preamble: int
     item_size: int
@@ -208,7 +236,7 @@ class BlockView:
         def f(x): return True
         if only_valid:
             def f(x): return x.valid
-        return [x for x in self if f(x)]
+        return [x.as_dict() for x in self if f(x)]
 
     def __iter__(self):
         for cb in self.chunk_blocks:
@@ -316,6 +344,7 @@ class structlist(basevar):
 
 
 class strvar(basevar):
+
     def __init__(self, offset, size, default=None):
         super().__init__(offset, default=default)
         self._size = size
@@ -339,33 +368,34 @@ class strvar(basevar):
         if isinstance(value, str):
             value = value.encode('ascii')
         elif not isinstance(value, (bytes, bytearray)):
-            raise ValueError()
+            raise ValueError(f"{value} not ascii-fiable")
 
         chunk = bytearray(value)
+        if len(chunk) >= self._size:
+            raise ValueError(f"{value} too long for {self._size} bytes")
+
         if len(chunk) < self._size:
             pad = self._size - len(chunk)
             chunk.extend(bytearray(repeat(0xff, pad)))
 
+        instance.data[self._offset : self._offset + self._size] = chunk
+
 
 class bcdvar(basevar):
-    def __init__(self, offset, size, *, big_endian=False, mult=1, default=None):
+    def __init__(self, offset, size, *, big_endian: bool=False, multiplier=1, default=None):
         super().__init__(offset, default=default)
         self._size = size
         self._big_endian = big_endian
-        self._mult = mult
+        self._multiplier = multiplier
 
     def __get__(self, instance, owner=None):
         if instance is None:
             return self
 
         chunk = instance.data[self._offset: self._offset + self._size]
-        res = 0
-        if self._big_endian:
-            chunk = reversed(chunk)
-        for i, b in enumerate(chunk):
-            res += (((b >> 4) & 0x0f) * 10 + (b & 0x0f)) * (100 ** i)
-        return res * self._mult
+        return bcd2int(chunk, big_endian=self._big_endian) * self._multiplier
 
     def __set__(self, instance, value):
-        value = int(value)
-        raise NotImplemented()
+        value = int(value / self._multiplier)
+        chunk = int2bcd(value, size=self._size, big_endian=self._big_endian)
+        instance.data[self._offset: self._offset + self._size] = chunk

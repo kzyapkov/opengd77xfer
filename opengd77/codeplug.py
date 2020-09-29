@@ -32,20 +32,6 @@ from opengd77.binvar import *
 log = logging.getLogger(__name__)
 
 
-def bcd2int(buf, *, big_endian=False):
-    if isinstance(buf, int):
-        buf = (buf, )
-    res = 0
-    if big_endian:
-        buf = reversed(buf)
-    for i, b in enumerate(buf):
-        res += (((b>>4) & 0x0f) * 10 + (b & 0x0f)) * (100 ** i)
-    return res
-
-def int2bcd(val, big_endian=False, pad=None):
-    sval = f"{val:u}"
-    raise NotImplemented()
-
 class MemType(IntEnum):
     FLASH = 1
     EEPROM = 2
@@ -61,9 +47,9 @@ class IndexedBinStruct(BinStruct):
             kw['index'] = None
         super().__init__(data, **kw)
 
-    @classmethod
-    def to_yaml(cls, representer, node):
-        return representer.represent_dict(node)
+    # @classmethod
+    # def to_yaml(cls, representer, node):
+    #     return representer.represent_dict(node)
 
     @property
     def valid(self):
@@ -103,8 +89,8 @@ class TGList(IndexedBinStruct):
 class Channel(IndexedBinStruct):
     SIZE = 56
     name = strvar(0, 16)
-    rx_freq = bcdvar(16, 4, mult=10)
-    tx_freq = bcdvar(20, 4, mult=10)
+    rx_freq = bcdvar(16, 4, multiplier=10)
+    tx_freq = bcdvar(20, 4, multiplier=10)
     mode = structvar(24, "B", default=0)                # none, analog, digital
     rx_ref_freq = structvar(25, "B", default=0)         # ignored
     tx_ref_freq = structvar(26, "B", default=0)         # ignored
@@ -274,6 +260,10 @@ class Codeplug:
     ]
 
     # CPPart describes a chunk of memory we read or write
+    # into the radio memory.
+    # TODO: see if we can deduce which sectors/pages need to be read/written
+    #       do it selectively. We could even skip overwriting if memory
+    #       content didn't change.
     CPPart = namedtuple('CPPart',
                         ['memtype', 'file_addr', 'radio_addr', 'size'])
     parts = (

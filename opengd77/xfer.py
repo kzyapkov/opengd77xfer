@@ -113,10 +113,11 @@ def write_yaml(cp: Codeplug, f) -> None:
     yaml.indent(None, 4, 2)
     register_yaml(yaml)
 
-    # dd = cp.as_dict()
-    # yaml.dump(dd, f)
+    dd = cp.as_dict()
+    log.info(dd)
+    yaml.dump(dd, f)
 
-    yaml.dump(cp, f)
+    # yaml.dump(cp.as_dict(), f)
 
     # log.info(f"Wrote YAML codeplug to {fname}")
 
