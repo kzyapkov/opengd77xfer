@@ -20,7 +20,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 import logging
 import struct
 from collections import OrderedDict
-from itertools import repeat
+from itertools import repeat, zip_longest
 from dataclasses import dataclass
 from typing import List
 
@@ -34,7 +34,7 @@ def bcd2int(buf, *, big_endian=False) -> int:
     if big_endian:
         buf = reversed(buf)
     for i, b in enumerate(buf):
-        res += (((b>>4) & 0x0f) * 10 + (b & 0x0f)) * (100 ** i)
+        res += (((b >> 4) & 0x0f) * 10 + (b & 0x0f)) * (100 ** i)
     return res
 
 
@@ -48,7 +48,8 @@ def int2bcd(val, *, size=4, big_endian=False) -> bytes:
     chunk = bytearray(repeat(0, size))
     for i, digit in enumerate(val):
         bits = int(digit)
-        if i % 2 == 0: bits = bits << 4
+        if i % 2 == 0:
+            bits = bits << 4
         if big_endian:
             chunk[i//2] |= bits
         else:
@@ -76,11 +77,13 @@ class BinStruct(metaclass=BinStructMeta):
         if not self.SIZE:
             raise ValueError(f"define SIZE in subclasses")
 
+        if data is not None and len(data) != self.SIZE:
+            raise ValueError(f"need data of len {self.SIZE} got {len(data)}")
+
         if data is None:
             data = bytearray(repeat(self.FILL, self.SIZE))
-
-        if len(data) != self.SIZE:
-            raise ValueError(f"need data of len {self.SIZE} got {len(data)}")
+            # for bvn, bv in self._binvars.items():
+            #     data[bv._offset : bv._offset + bv._size] = bv.fill
 
         self._data = data
 
@@ -249,8 +252,9 @@ class BlockView:
 class basevar:
     """Represent a field inside a BinStruct"""
 
-    def __init__(self, offset, /, default=None):
+    def __init__(self, offset, size, /, default=None):
         self._offset = offset
+        self._size = size
         self.default = default
         self._name = None
         self._owner_name = None
@@ -286,9 +290,9 @@ class basevar:
 
 class structvar(basevar):
     def __init__(self, offset, fmt, *, default=None):
-        super().__init__(offset, default=default)
-        self._struct = struct.Struct(fmt)
-        self._size = self._struct.size
+        s = struct.Struct(fmt)
+        super().__init__(offset, s.size, default=default)
+        self._struct = s
         self._end = self._offset + self._size
 
     def __get__(self, instance, owner=None):
@@ -300,16 +304,20 @@ class structvar(basevar):
         return self._struct.unpack(bytes(chunk))[0]
 
     def __set__(self, instance, value):
-        b = self._struct.pack(value)
+        try:
+            b = self._struct.pack(value)
+        except (struct.error, ) as e:
+            raise ValueError(str(e))
+
         instance.data[self._offset: self._end] = b
 
 
 class structlist(basevar):
     def __init__(self, offset, fmt, count, *,
-                 filter_=None, fill=0xff, sort=True, default=None):
-        super().__init__(offset, default=default)
-        self._struct = struct.Struct(fmt)
-        self._size = self._struct.size
+                 filter_=None, fill=0xff, sort=True, default=0):
+        s = struct.Struct(fmt)
+        super().__init__(offset, s.size * count, default=default)
+        self._struct = s
         self._count = count
         self._filter = filter_
         self._fill_byte = fill
@@ -317,8 +325,8 @@ class structlist(basevar):
 
     def _find_start_end(self, i):
         return (
-            self._offset + self._size * i,
-            self._offset + self._size * (i + 1)
+            self._offset + self._struct.size * i,
+            self._offset + self._struct.size * (i + 1)
         )
 
     def __get__(self, instance, owner=None):
@@ -340,20 +348,32 @@ class structlist(basevar):
 
     def __set__(self, instance, value):
         """setting the whole list? easy. slice or mutate? not so much so"""
-        raise NotImplemented()
+        if len(value) > self._count:
+            raise ValueError((f"{self._name} takes at most {self._count} "
+                              f"elements, {len(value)} given"))
+
+        if self._sort:
+            value = sorted(value)
+
+        for i, x in zip_longest(range(self._count), value, fillvalue=...):
+            if x is ...:
+                x = self.default
+
+            start, end = self._find_start_end(i)
+            v = self._struct.pack(x)
+            instance.data[start:end] = self._struct.pack(x)
 
 
 class strvar(basevar):
 
-    def __init__(self, offset, size, default=None):
-        super().__init__(offset, default=default)
-        self._size = size
+    # def __init__(self, offset, size, default=None):
+    #     super().__init__(offset, size, default=default)
 
     def __get__(self, instance, owner=None):
         if instance is None:
             return self
 
-        chunk = instance.data[self._offset : self._offset + self._size]
+        chunk = instance.data[self._offset: self._offset + self._size]
         if len(chunk) != self._size:
             raise ValueError("underlying buf too short?")
         if chunk[0] == 0x00 or chunk[0] == 0xff:
@@ -361,7 +381,7 @@ class strvar(basevar):
         try:
             return bytes(chunk).rstrip(b"\xff").rstrip(b"\0").decode('ascii')
         except UnicodeDecodeError as e:
-            log.info(f"unable to decode {bytes(chunk)}, ignoring")
+            log.info(f"unable to decode {bytes(chunk)} ({self._fullname})")
             return ""
 
     def __set__(self, instance, value):
@@ -378,13 +398,12 @@ class strvar(basevar):
             pad = self._size - len(chunk)
             chunk.extend(bytearray(repeat(0xff, pad)))
 
-        instance.data[self._offset : self._offset + self._size] = chunk
+        instance.data[self._offset: self._offset + self._size] = chunk
 
 
 class bcdvar(basevar):
-    def __init__(self, offset, size, *, big_endian: bool=False, multiplier=1, default=None):
-        super().__init__(offset, default=default)
-        self._size = size
+    def __init__(self, offset, size, *, big_endian: bool = False, multiplier=1, default=None):
+        super().__init__(offset, size, default=default)
         self._big_endian = big_endian
         self._multiplier = multiplier
 

@@ -56,7 +56,6 @@ class IndexedBinStruct(BinStruct):
         return True
 
 
-
 class Contact(IndexedBinStruct):
     SIZE = 24
     name = strvar(0, 16)
@@ -79,7 +78,8 @@ class Contact(IndexedBinStruct):
 class TGList(IndexedBinStruct):
     SIZE = 80
     name = strvar(0, 16)
-    contact_nums = structlist(16, "<H", 16, filter_=lambda x: x > 0 and x < 2000)
+    contact_nums = structlist(
+        16, "<H", 16, filter_=lambda x: x > 0 and x < 2000)
 
     @property
     def valid(self):
@@ -132,13 +132,12 @@ class Channel(IndexedBinStruct):
 class Zone(IndexedBinStruct):
     SIZE = 16 + 2 * 80
     name = strvar(0, 16)
-    channel_nums = structlist(16, "<H", 80, filter_=lambda x: x != 0 and x < 2000)
+    channel_nums = structlist(
+        16, "<H", 80, filter_=lambda x: x != 0 and x < 2000)
 
     @property
     def valid(self):
         return len(self.channel_nums) > 0
-
-
 
 
 class ZonesView(BlockView):
@@ -159,7 +158,7 @@ class ZonesView(BlockView):
     @property
     def zbytes(self):
         zb = self.zblock
-        return self.buf[zb.raw_offset : zb.raw_offset + 32]
+        return self.buf[zb.raw_offset: zb.raw_offset + 32]
 
     @property
     def ch_per_zone(self):
@@ -206,19 +205,21 @@ class ZonesView(BlockView):
         if addr is None:
             raise KeyError(f"{key} out of range")
 
-        chunk = self.buf[addr : addr + 16 + (2 * self.ch_per_zone)]
+        chunk = self.buf[addr: addr + 16 + (2 * self.ch_per_zone)]
         try:
             z = Zone(chunk)
         except Exception as e:
-            log.exception(f"failed creating Zone at 0x{addr:x} chpz {self.ch_per_zone}")
+            log.exception(
+                f"failed creating Zone at 0x{addr:x} chpz {self.ch_per_zone}")
             raise KeyError(f"{key} internal error")
 
         z.index = key
         return z
 
     def __len__(self):
-        bitstr = ''.join((f"{x:08b}" for x in self.zbytes)) # bits as 01 string
-        bitstr = bitstr[:self.SIZE] # only look at the first 68 bits
+        bitstr = ''.join((f"{x:08b}" for x in self.zbytes)
+                         )  # bits as 01 string
+        bitstr = bitstr[:self.SIZE]  # only look at the first 68 bits
         l = bitstr.count('1')
         return l
 
@@ -234,7 +235,7 @@ class Codeplug:
     # blocks describe semantics of the binary blob
     blocks = {
         'scan_lists': ChunkedBlock(0x1790, 64, 88, 64),
-        'zones': ChunkedBlock(0x8010, 32, 16+(2*80), 32*8), # special case
+        'zones': ChunkedBlock(0x8010, 32, 16+(2*80), 32*8),  # special case
         'contacts': ChunkedBlock(0x17620, 0, 24, 1024),
         'tglist': ChunkedBlock(0x1d620, 0x80, 80, 76),
         # channels are listed separately
@@ -291,7 +292,7 @@ class Codeplug:
         if buffer:
             if len(buffer) != self.SIZE:
                 raise ValueError("codeplug is exactly {self.SIZE} bytes long")
-            if any((x>0xff for x in buffer)):
+            if any((x > 0xff for x in buffer)):
                 raise ValueError("bad data in codeplug buffer")
             self.data = bytearray(buffer)
         else:
@@ -307,7 +308,7 @@ class Codeplug:
     @cached_property
     def talk_groups(self):
         def ftg(tgb, key, chunk):
-            table = self.data[tgb.raw_offset : tgb.raw_offset + tgb.item_count]
+            table = self.data[tgb.raw_offset: tgb.raw_offset + tgb.item_count]
             if table[key] == 0:
                 return False
             return True
@@ -323,31 +324,33 @@ class Codeplug:
         # return []
         return ZonesView(self.data, Zone, (0x7500, 0xb000), self.blocks['zones'])
 
-
     @classmethod
     def dump_parts(cls):
         def block_in_part(block: ChunkedBlock, part: cls.CPPart) -> bool:
             start = block.raw_offset
             end = start + block.size
             part_end = part.file_addr + part.size
-            return start >= part.file_addr and start < part_end # and end < part_end
+            return start >= part.file_addr and start < part_end  # and end < part_end
 
         log.info("-----------  CODEPLUG FILE PARTS  ------------")
         log.info(" N where t      start - end        size")
         log.info("----------------------------------------------")
         for i, p in enumerate(cls.parts):
-            blocks = [f"{bn}@0x{b.raw_offset:04x}" for bn, b in cls.all_blocks() if block_in_part(b, p)]
+            blocks = [f"{bn}@0x{b.raw_offset:04x}" for bn,
+                      b in cls.all_blocks() if block_in_part(b, p)]
             start = p.file_addr
             end = start + p.size
             mode = 'E' if p.memtype == MemType.EEPROM else 'f'
             log.info((f"{i: 2} file  {mode} 0x{start:08x} - 0x{end:08x} "
-                       f"0x{p.size:06x}  {','.join(blocks)}"))
+                      f"0x{p.size:06x}  {','.join(blocks)}"))
             if p.file_addr == p.radio_addr:
                 continue
             start = p.radio_addr
             end = start + p.size
-            blocks = [f"{bn}@0x{cls.file2radio(b.raw_offset):04x}" for bn, b in cls.all_blocks() if block_in_part(b, p)]
-            log.info(f"{i: 2} radio {mode} 0x{start:08x} - 0x{end:08x} 0x{p.size:06x}  {','.join(blocks)}")
+            blocks = [f"{bn}@0x{cls.file2radio(b.raw_offset):04x}" for bn,
+                      b in cls.all_blocks() if block_in_part(b, p)]
+            log.info(
+                f"{i: 2} radio {mode} 0x{start:08x} - 0x{end:08x} 0x{p.size:06x}  {','.join(blocks)}")
 
     @classmethod
     def all_blocks(cls):
@@ -377,16 +380,16 @@ class Codeplug:
 
     @property
     def dmr_id(self):
-        b = self.data[0x00E8 : 0x00E8 + 4]
+        b = self.data[0x00E8: 0x00E8 + 4]
         return bcd2int(b, big_endian=True)
 
     @dmr_id.setter
     def dmr_id(self, value):
-        self.data[0x00E8 : 0x00E8 + 4] = int2bcd(value, big_endian=True)
+        self.data[0x00E8: 0x00E8 + 4] = int2bcd(value, big_endian=True)
 
     @property
     def callsign(self):
-        b = self.data[0x00E0 : 0x00E0 + 8]
+        b = self.data[0x00E0: 0x00E0 + 8]
         return bytes(b).rstrip(b'\xff').rstrip(b'\0').decode('ascii')
 
     @callsign.setter
@@ -396,7 +399,7 @@ class Codeplug:
         if len(value) > 8:
             raise ValueError(f"callsign is at most 8 symbols long")
 
-        self.data[0x00E0 : 0x00E0 + len(value)] = value
+        self.data[0x00E0: 0x00E0 + len(value)] = value
 
     def as_dict(self):
         return {
@@ -429,7 +432,8 @@ class Codeplug:
         return f"<Codeplug {self.dmr_id} '{self.callsign}'>"
 
     def __len__(self):
-        if not self.data: return 0
+        if not self.data:
+            return 0
         return len(self.data)
 
 

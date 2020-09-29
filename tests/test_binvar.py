@@ -1,10 +1,11 @@
-from unittest import TestCase
+from unittest import TestCase, skip
 
 from opengd77.binvar import *
 
 
 class TestBinStruct(BinStruct):
     SIZE = 100
+    FILL = 0xaa
 
     name = strvar(0, 16)
     surname = strvar(16, 32)
@@ -14,10 +15,12 @@ class TestBinStruct(BinStruct):
     bcd_x10 = bcdvar(56, 4, big_endian=True, multiplier=10)
     bcd_le_x10 = bcdvar(60, 4, big_endian=False, multiplier=10)
 
+    struct = structvar(64, ">h", default=-1)
+
+    structlist = structlist(70, "B", 10, fill=0x00, default=0, filter_=lambda x: x>0)
 
 
-class BCDVarTestCase(TestCase):
-
+class BCDVarTest(TestCase):
 
     def test_writing_bigendian(self):
         val = 123456
@@ -38,8 +41,7 @@ class BCDVarTestCase(TestCase):
         self.assertEqual(s.bcd_x10, val)
 
 
-
-class StrvarTestCase(TestCase):
+class StrvarTest(TestCase):
 
     def test_reading(self):
         ...
@@ -65,4 +67,34 @@ class StrvarTestCase(TestCase):
             s.name = "aA" * 10
 
 
+class StructvarTest(TestCase):
 
+    @skip("defaults do not apply automagically, should they?")
+    def test_default_value(self):
+        s = TestBinStruct()
+        self.assertEqual(s.struct, -1)
+
+    def test_basic_write_read(self):
+        s = TestBinStruct()
+
+        s.struct = -12
+        self.assertEqual(s.struct, -12)
+
+        s.struct = 123
+        self.assertEqual(s.struct, 123)
+
+        s.struct = 32767
+        self.assertEqual(s.struct, 32767)
+
+        with self.assertRaises(ValueError):
+            s.struct = 32767 + 1
+
+
+class StructlistTest(TestCase):
+    def test_empty_list(self):
+        s = TestBinStruct()
+
+        self.assertEqual(s.structlist, [0xaa] * TestBinStruct.structlist._count)
+
+        s.structlist = []
+        self.assertEqual(s.structlist, [])

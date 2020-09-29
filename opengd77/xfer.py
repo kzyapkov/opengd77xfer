@@ -107,6 +107,7 @@ def read_from_radio(port: str) -> Codeplug:
     log.info(f"Read {len(cp.data)} bytes")
     return cp
 
+
 def write_yaml(cp: Codeplug, f) -> None:
     yaml = YAML()
     yaml.default_flow_style = None
@@ -114,12 +115,7 @@ def write_yaml(cp: Codeplug, f) -> None:
     register_yaml(yaml)
 
     dd = cp.as_dict()
-    log.info(dd)
     yaml.dump(dd, f)
-
-    # yaml.dump(cp.as_dict(), f)
-
-    # log.info(f"Wrote YAML codeplug to {fname}")
 
 
 def main():
@@ -167,7 +163,6 @@ def main():
         yaml = YAML()
         with open(args.input_file, 'rb') as f:
             yml = yaml.load(f.read())
-        log.info(yml)
 
     elif args.cmd == 'backup_calib':
         if not args.file.endswith('.g77calib'):
