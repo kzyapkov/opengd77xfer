@@ -42,7 +42,7 @@ def int2bcd(val, *, size=4, big_endian=False) -> bytes:
     val = f"{val}"
 
     if len(val) > size * 2:
-        raise ValueError("'{val}' doesn't fit in {size} bytes")
+        raise ValueError(f"'{val}' doesn't fit in {size} bytes")
 
     val = val.zfill(size * 2)
     chunk = bytearray(repeat(0, size))

@@ -382,7 +382,7 @@ class Codeplug:
 
     @dmr_id.setter
     def dmr_id(self, value):
-        raise NotImplemented()
+        self.data[0x00E8 : 0x00E8 + 4] = int2bcd(value, big_endian=True)
 
     @property
     def callsign(self):
@@ -391,7 +391,12 @@ class Codeplug:
 
     @callsign.setter
     def callsign(self, value):
-        raise NotImplemented()
+        if type(value) is str:
+            value = value.encode('ascii')
+        if len(value) > 8:
+            raise ValueError(f"callsign is at most 8 symbols long")
+
+        self.data[0x00E0 : 0x00E0 + len(value)] = value
 
     def as_dict(self):
         return {
