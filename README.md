@@ -33,10 +33,23 @@ The tool supports reading and writing in the original binary format:
     gd77xfer -p /dev/myradio read my-codeplug.g77
     gd77xfer -p /dev/myradio write my-codeplug.g77
 
+Reading-writing whole EEPROM:
+
+    gd77xfer -p /dev/myradio backup_eeprom my-eeprom.g77eeprom
+    gd77xfer -p /dev/myradio restore_eeprom my-eeprom.g77eeprom
+
 The intention is to support import/export to yaml, but currently only export
 is implemented
 
     gd77xfer export my-codeplug.g77 my-codeplug.yml
+
+
+## Contribution
+
+    python3.11 -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+    python opengd77/xfer.py ....
 
 
 ## Copyright

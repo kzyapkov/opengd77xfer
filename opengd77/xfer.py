@@ -137,14 +137,14 @@ def main():
         else:
             write_yaml(cp, args.file)
 
-        log.info(f"Read codeplug from {args.port} into {args.file}")
+        log.info(f"Read codeplug from {args.port} into {args.file.name}")
 
     elif args.cmd == 'write':
-        log.info(f"Writing codeplug from {args.file} into {args.port}")
+        log.info(f"Writing codeplug from {args.file.name} into {args.port}")
         cp = Codeplug.from_file(args.file)
         radio = OpenGD77Radio(args.port)
         radio.write_codeplug(cp)
-        log.info(f"Wrote {args.file} into {args.port}")
+        log.info(f"Wrote {args.file.name} into {args.port}")
 
     elif args.cmd == 'export':
         log.warning(f"export {args}")
@@ -156,31 +156,31 @@ def main():
             cp = read_from_radio(args.port)
 
         write_yaml(cp, args.output_file)
-        log.info(f"Exported data from {src} into {args.output_file}")
+        log.info(f"Exported data from {src} into {args.output_file.name}")
 
     elif args.cmd == 'import':
+        # TODO: finish export logic
         cp = Codeplug.from_file(args.output_file)
         yaml = YAML()
         with open(args.input_file, 'rb') as f:
             yml = yaml.load(f.read())
 
     elif args.cmd == 'backup_calib':
-        if not args.file.endswith('.g77calib'):
-            args.file = f"{args.file}.g77calib"
-        log.info(f"Storing calibration from {args.port} to {args.file}")
+        log.info(f"Storing calibration from {args.port} to {args.file.name}")
+        if not args.file.name.endswith('.g77calib'):
+            log.info("We strongly recommend to use .g77calib extension")
         radio = OpenGD77Radio(args.port)
         data = radio.read_calibration()
-        with open(args.file, 'wb') as f:
-            f.write(data)
+        args.file.write(data)
+
 
     elif args.cmd == 'backup_eeprom':
-        if not args.file.endswith('.g77eeprom'):
-            args.file = f"{args.file}.g77eeprom"
-        log.info(f"Storing EEPROM from {args.port} to {args.file}")
+        log.info(f"Storing EEPROM from {args.port} to {args.file.name}")
+        if not args.file.name.endswith('.g77eeprom'):
+            log.info("We strongly recommend to use .g77eeprom extension")
         radio = OpenGD77Radio(args.port)
         data = radio.read_eeprom()
-        with open(args.file, 'wb') as f:
-            f.write(data)
+        args.file.write(data)
 
     # elif args.cmd == 'restore_calib':
     # elif args.cmd == 'restore_eeprom':
